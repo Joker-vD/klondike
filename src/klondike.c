@@ -121,16 +121,27 @@ void render_game_state(FILE *f, const Klondike *game) {
 
 typedef Card CardOrPlace;
 
-typedef enum Place: byte {
+typedef enum Place : byte {
     HOME1 = 16 * 4, HOME2, HOME3, HOME4,
     PILE1, PILE2, PILE3, PILE4, PILE5, PILE6, PILE7,
 } Place;
 
 bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 
-typedef struct Cmd {
+typedef struct MoveCmd {
     Card from;
     CardOrPlace to;
+} MoveCmd;
+
+typedef enum CmdKind : byte {
+    CMD_QUIT, CMD_MOVE, CMD_DEAL,
+} CmdKind;
+
+typedef struct Cmd {
+    CmdKind kind;
+    union {
+        MoveCmd move;
+    };
 } Cmd;
 
 const char *skip_ws(const char *raw) {
@@ -182,7 +193,7 @@ const char *parse_suit(const char *raw, Suit *suit) {
         return &raw[1];
     }
 
-    for (Suit s = 0; s <= COUNTOF(SUIT_SYMBOLS); s++) {
+    for (Suit s = 0; s < COUNTOF(SUIT_SYMBOLS); s++) {
         if (strncmp(raw, SUIT_SYMBOLS[s], 3) == 0) {
             *suit = s;
             return &raw[3];
@@ -235,8 +246,8 @@ const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
     return parse_card(raw, x);
 }
 
-// CMD  ::=  CARD "TO"? (CARD | PLACE)
-bool parse_cmd(const char *raw, Cmd *cmd) {
+// MOVE_CMD  ::=  CARD "TO"? (CARD | PLACE)
+bool parse_move_cmd(const char *raw, MoveCmd *cmd) {
     raw = maybe_skip_ws(raw);
 
     raw = parse_card(raw, &cmd->from);
@@ -253,7 +264,27 @@ bool parse_cmd(const char *raw, Cmd *cmd) {
 
     raw = maybe_skip_ws(raw);
 
-    return (raw != NULL && raw[0] == '\n');
+    return (raw != NULL && raw[0] == 0);
+}
+
+// CMD  ::=  MOVE_CMD | "DEAL" | "" | "Q" "UIT"?
+bool parse_cmd(const char *raw, Cmd *cmd) {
+    if (raw[0] == 0 || strcmp(raw, "DEAL") == 0) {
+        cmd->kind = CMD_DEAL;
+        return true;
+    }
+
+    if (strcmp(raw, "Q") == 0 || strcmp(raw, "QUIT") == 0) {
+        cmd->kind = CMD_QUIT;
+        return true;
+    }
+
+    if (parse_move_cmd(raw, &cmd->move)) {
+        cmd->kind = CMD_MOVE;
+        return true;
+    }
+
+    return false;
 }
 
 const Card TESTING_DECK[52] = {
@@ -273,23 +304,38 @@ const char* const TESTING_COMMANDS =
     "JS TO QD  \n"
     "  AC HOME4\n"
     "DEAL\n"
+    "\n"
+    "invalid"
+    "\n"
+    "h4 to c5\n"
+    "q\n"
+    "quit\n"
 ;
 
 char COMMAND_LINE_BUFFER[64];
 
 char* read_command_line(void) {
     static const char *cursor = TESTING_COMMANDS;
-    const char *next_cursor = strchr(cursor, '\n');
-    if (next_cursor != NULL) {
-        next_cursor++;
-        memcpy(COMMAND_LINE_BUFFER, cursor, next_cursor - cursor);
-        COMMAND_LINE_BUFFER[next_cursor - cursor] = 0;
-    } else {
-        COMMAND_LINE_BUFFER[0] = 0;
+
+    if (cursor == NULL) {
+        return NULL;
     }
 
-    cursor = next_cursor;
-    return COMMAND_LINE_BUFFER;
+    const char *next_cursor = strchr(cursor, '\n');
+    if (next_cursor != NULL) {
+        char *dst;
+        for (dst = COMMAND_LINE_BUFFER; cursor != next_cursor; cursor++, dst++) {
+            char ch = *cursor;
+            if (ch >= 'a' && ch <= 'z') { ch -= 'a' - 'A'; }
+            *dst = ch;
+        }
+        *dst = 0;
+        cursor++;
+        return COMMAND_LINE_BUFFER;
+    } else {
+        cursor = NULL;
+        return NULL;
+    }
 }
 
 int main(int argc, char **argv) {
@@ -317,9 +363,10 @@ int main(int argc, char **argv) {
         }
 
         Cmd cmd;
-        if (!parse_cmd(raw, &cmd)) {
-            fprintf(stderr, "! %s", raw);
-            return 1;
+        if (parse_cmd(raw, &cmd)) {
+            fprintf(stderr, ". '%s'\n", raw);
+        } else {
+            fprintf(stderr, "! '%s'\n", raw);
         }
     }
 
