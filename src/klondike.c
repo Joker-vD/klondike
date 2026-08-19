@@ -650,151 +650,35 @@ const Card TESTING_DECK[52] = {
      { 19 }, { 61 }, { 55 }, { 22 }, { 54 }, { 40 }, { 4 }, { 18 }, { 9 }, { 36 }, { 12 }, { 41 },
 };
 
-const char* const TESTING_COMMANDS =
-    "JS TO QD  \n"
-    "  AC HOME4\n"
-    "DEAL\n"
-    "\n\n"
-    "h4 to c5\n"
-    "3s TO h4\n"
-    "\n\n"
-    "2c to ac\n"
-    "\n\n\n\n\n\n\n"
-    "3c up\n"
-    "\n\n\n"
-    "8s TO 9D\n"
-    "\n"
-    "h7 TO 8s\n"
-    "6s TO 7h\n"
-    "\n\n"
-    "10C TO Jh\n"
-    "d9 c10\n"
-    "10h To SJ\n"
-    "7s d8\n"
-    "Ah up\n"
-    "Qh TO Ks\n"
-    "\n"
-    "2d TO 3s\n"
-    "\n\n"
-    "DA\n"
-    "D2\n"
-    "\n\n"
-    " 5D 6s\n"
-    "  C4   3c\n"
-    "5c TO 6h \n"
-    "  deal  \n"
-    "h2 uP   \n"
-    "\n\n\n\n"
-    "s9 H10\n"
-    "8d 9♠\n"
-    "2♠ 3d\n"
-    "\n"
-    "4♠ 5d\n"
-    "3d 4♠\n"
-    "6♥ 7♠\n"
-    "K♠ emptY\n"
-    "\n\n"
-    "6d 7♣\n"
-    "\n\n\n\n\n\n"
-    "3♥ 2♥\n"
-    "\n\n"
-    "5♠ 6d\n"
-    "4d 5♠\n"
-    "\n\n"
-    "9♥ 10♠\n"
-    "8C 9H\n"
-    "JC QH\n"
-    "10D JC\n"
-    "\n\n\n\n"
-    "7D 8C\n"
-    "6C 7D\n"
-    "5H 6C\n"
-    "\n"
-    "KD EMPTY5\n"
-    "\n"
-    "QC KD\n"
-    "\n"
-    "JD QC\n"
-    "10S JD\n"
-    "AS up\n"
-    "2S AS\n"
-    "3S 2S\n"
-    "\n"
-    "KH Empty\n"
-    "\n\n"
-    "QS KH\n"
-    "\n"
-    "3D 2D\n"
-    "4D 3D\n"
-    "4H 3H\n"
-    "4S 3S\n"
-    "5C 4C\n"
-    "5H 4H\n"
-    "5D 4D\n"
-    "5S 4S\n"
-    "6D 5D\n"
-    "6C 5C\n"
-    "7C 6C\n"
-    "KC empty6\n"
-    "9C 10D\n"
-    "8H 9C\n"
-    "QD KC\n"
-    "JH QS\n"
-    "6S 5S\n"
-    "6H 5H\n"
-    "7S 6S\n"
-    "7H 6H\n"
-    "7D 6D\n"
-    "8H 7H\n"
-    "8S 7S\n"
-    "8C 7C\n"
-    "8D 7D\n"
-    "9C 8C\n"
-    "9D 8D\n"
-    "9H 8H\n"
-    "9S 8S\n"
-    "10D 9D\n"
-    "10C 9C\n"
-    "10S 9S\n"
-    "10H 9H\n"
-    "JC\n"
-    "JH\n"
-    "JD\n"
-    "JS\n"
-    "QH\n"
-    "QS\n"
-    "QC\n"
-    "QD\n"
-    "KS\n"
-    "KH\n"
-    "KD\n"
-    "KC\n"
-;
-
 char COMMAND_LINE_BUFFER[64];
 
-char* read_command_line(void) {
-    static const char *cursor = TESTING_COMMANDS;
+char* read_command_line(FILE *input, FILE *output) {
+    do {
+        fputs("> ", output);
+        fflush(output);
 
-    if (cursor == NULL) {
-        return NULL;
-    }
-
-    const char *next_cursor = strchr(cursor, '\n');
-    if (next_cursor != NULL) {
-        char *dst;
-        for (dst = COMMAND_LINE_BUFFER; cursor != next_cursor; cursor++, dst++) {
-            char ch = *cursor;
-            if (ch >= 'a' && ch <= 'z') { ch -= 'a' - 'A'; }
-            *dst = ch;
+        if (fgets(COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER), input) == NULL) {
+            return NULL;
         }
-        *dst = 0;
-        cursor++;
-        return COMMAND_LINE_BUFFER;
-    } else {
-        cursor = NULL;
-        return NULL;
-    }
+
+        char *newline = strchr(COMMAND_LINE_BUFFER, '\n');
+        if (newline != NULL) {
+            *newline = 0;
+            for (char *s = COMMAND_LINE_BUFFER; s < newline; s++) {
+                if (*s >= 'a' && *s <= 'z') { *s -= 'a' - 'A'; }
+            }
+            return COMMAND_LINE_BUFFER;
+        }
+
+        // Skip overly long line
+        while (newline == NULL) {
+            if (fgets(COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER), input) == NULL) {
+                return NULL;
+            }
+
+            newline = strchr(COMMAND_LINE_BUFFER, '\n');
+        }
+    } while(true);
 }
 
 void start_game(Klondike *game, const Card deck[static 52]) {
@@ -824,18 +708,18 @@ typedef enum GameResult : byte {
     GAME_QUIT, GAME_WON,
 } GameResult;
 
-GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52]) {
+GameResult play_game(FILE *input, FILE *output, Klondike *game, const Card shuffled_deck[static 52]) {
     start_game(game, TESTING_DECK);
 
     while (true) {
-        render_game_state(stdout, game);
+        render_game_state(output, game);
 
         if (is_game_won(game)) {
             return GAME_WON;
         }
 
         for (bool command_succeeded = false; !command_succeeded; ) {
-            const char *raw = read_command_line();
+            const char *raw = read_command_line(input, output);
 
             if (raw == NULL) {
                 return GAME_QUIT;
@@ -843,7 +727,7 @@ GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52
 
             Cmd cmd;
             if (!parse_cmd(raw, &cmd)) {
-                fprintf(stderr, "! %s\n", raw);
+                fputs("?\n", output);
                 continue;
             }
 
@@ -862,7 +746,7 @@ GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52
             }
 
             if (!command_succeeded) {
-                fprintf(stderr, "? %s\n", raw);
+                fputs("!\n", output);
             }
         }
     }
@@ -871,7 +755,7 @@ GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52
 int main(int argc, char **argv) {
     Klondike game = { 0 };
 
-    if (play_game(stdout, &game, TESTING_DECK) == GAME_WON) {
+    if (play_game(stdin, stdout, &game, TESTING_DECK) == GAME_WON) {
         fputs("\aYou won!\n", stdout);
     }
 

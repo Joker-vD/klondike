@@ -1,4 +1,4 @@
-.PHONY: build clean run
+.PHONY: build clean run test
 
 TARGET := klondike
 
@@ -21,6 +21,8 @@ clean:
 run: build
 	$(BIN_DIR)/$(TARGET)
 
+test: build
+	./test.sh
 
 $(BIN_DIR):
 	mkdir $(BIN_DIR)
