@@ -27,7 +27,17 @@ Rank get_rank(Card card) { return card.d % 16; }
 Suit get_suit(Card card) { return card.d / 16; }
 bool is_face_up(Card card) { return (sbyte)card.d >= 0; }
 
-Card flip_card(Card card) { return (Card){.d = -card.d}; }
+Card hide_card(Card card) { return is_face_up(card) ? (Card){.d = -card.d} : card; }
+Card show_card(Card card) { return is_face_up(card) ? card : (Card){.d = -card.d}; }
+
+typedef Card CardOrPlace;
+
+typedef enum Place : byte {
+    HOME1 = 16 * 4, HOME2, HOME3, HOME4,
+    PILE1, PILE2, PILE3, PILE4, PILE5, PILE6, PILE7,
+} Place;
+
+bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 
 const char * const SUIT_SYMBOLS[] = {
     [SPADES]    = "\xE2\x99\xA0",
@@ -89,11 +99,66 @@ Card pop_card(Depot *depot) {
     return result;
 }
 
+typedef enum CardVisibilityAction : byte {
+    JUST_MOVE_CARD, HIDE_CARD, SHOW_CARD,
+} CardVisibilityAction;
+
+void move_top_card(Depot *from, Depot *to, CardVisibilityAction card_action) {
+    Card card = pop_card(from);
+
+    if (is_valid_card(card)) {
+        switch (card_action) {
+        case JUST_MOVE_CARD:
+            break;
+        case HIDE_CARD:
+            card = hide_card(card);
+            break;
+        case SHOW_CARD:
+            card = show_card(card);
+            break;
+        }
+
+        add_card(card, to);
+    }
+}
+
 typedef struct Klondike {
     Depot stock, waste;
     Depot homes[4];
     Depot piles[7];
 } Klondike;
+
+bool is_game_won(const Klondike *game) {
+    for (byte i = 0; i < COUNTOF(game->homes); i++) {
+        if (get_rank(top_card(&game->homes[i])) != KING) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool try_deal_card(Klondike *game) {
+    if (is_empty_depot(&game->stock)) {
+        if (is_empty_depot(&game->waste)) {
+            return false;
+        }
+
+        add_card(hide_card(pop_card(&game->waste)), &game->waste);
+        while (!is_empty_depot(&game->waste)) {
+            add_card(pop_card(&game->waste), &game->stock);
+        }
+        return true;
+    }
+
+    add_card(hide_card(pop_card(&game->waste)), &game->waste);
+    add_card(show_card(pop_card(&game->stock)), &game->waste);
+    return true;
+}
+
+bool try_move_card(Klondike *game, Card from, CardOrPlace to) {
+    return false;
+}
 
 void render_game_state(FILE *f, const Klondike *game) {
     fprint_card(f, top_card(&game->stock));
@@ -118,15 +183,6 @@ void render_game_state(FILE *f, const Klondike *game) {
         putc('\n', f);
     }
 }
-
-typedef Card CardOrPlace;
-
-typedef enum Place : byte {
-    HOME1 = 16 * 4, HOME2, HOME3, HOME4,
-    PILE1, PILE2, PILE3, PILE4, PILE5, PILE6, PILE7,
-} Place;
-
-bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 
 typedef struct MoveCmd {
     Card from;
@@ -338,36 +394,71 @@ char* read_command_line(void) {
     }
 }
 
-int main(int argc, char **argv) {
-    Klondike game = { 0 };
-
+void start_game(Klondike *game, const Card deck[static 52]) {
     byte deck_index = 0;
-    for (byte i = 0; i < COUNTOF(game.piles); i++) {
-        Depot *pile = &game.piles[i];
+    for (byte i = 0; i < COUNTOF(game->piles); i++) {
+        Depot *pile = &game->piles[i];
         for (byte j = 0; j < i; j++) {
-            add_card(flip_card(TESTING_DECK[deck_index++]), pile);
+            add_card(hide_card(deck[deck_index++]), pile);
         }
-        add_card(TESTING_DECK[deck_index++], pile);
+        add_card(show_card(deck[deck_index++]), pile);
     }
 
     while (deck_index < 52) {
-        add_card(flip_card(TESTING_DECK[deck_index++]), &game.stock);
+        add_card(hide_card(deck[deck_index++]), &game->stock);
     }
+}
 
-    render_game_state(stdout, &game);
+typedef enum GameResult : byte {
+    GAME_QUIT, GAME_WON,
+} GameResult;
+
+GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52]) {
+    start_game(game, TESTING_DECK);
+
     while (true) {
-        const char *raw = read_command_line();
+        render_game_state(stdout, game);
 
-        if (raw == NULL) {
-            return 0;
+        if (is_game_won(game)) {
+            return GAME_WON;
         }
 
-        Cmd cmd;
-        if (parse_cmd(raw, &cmd)) {
-            fprintf(stderr, ". '%s'\n", raw);
-        } else {
-            fprintf(stderr, "! '%s'\n", raw);
+        for (bool command_succeeded = false; !command_succeeded; ) {
+            const char *raw = read_command_line();
+
+            if (raw == NULL) {
+                return GAME_QUIT;
+            }
+
+            Cmd cmd;
+            if (!parse_cmd(raw, &cmd)) {
+                fprintf(stderr, "! %s\n", raw);
+                continue;
+            }
+
+            switch (cmd.kind) {
+            case CMD_QUIT:
+                return GAME_QUIT;
+            case CMD_DEAL:
+                command_succeeded = try_deal_card(game);
+                break;
+            case CMD_MOVE:
+                command_succeeded = try_move_card(game, cmd.move.from, cmd.move.to);
+                break;
+            }
+
+            if (!command_succeeded) {
+                fprintf(stderr, "? %s\n", raw);
+            }
         }
+    }
+}
+
+int main(int argc, char **argv) {
+    Klondike game = { 0 };
+
+    if (play_game(stdout, &game, TESTING_DECK) == GAME_WON) {
+        fputs("\aYou won!\n", stdout);
     }
 
     return 0;
