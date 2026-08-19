@@ -283,15 +283,13 @@ bool try_deal_card(Klondike *game) {
             return false;
         }
 
-        add_card(hide_card(pop_card(&game->waste)), &game->waste);
         while (!is_empty_depot(&game->waste)) {
-            add_card(pop_card(&game->waste), &game->stock);
+            move_top_card(&game->waste, &game->stock, HIDE_CARD);
         }
         return true;
     }
 
-    add_card(hide_card(pop_card(&game->waste)), &game->waste);
-    add_card(show_card(pop_card(&game->stock)), &game->waste);
+    move_top_card(&game->stock, &game->waste, SHOW_CARD);
     return true;
 }
 
@@ -357,8 +355,43 @@ bool try_move_card(Klondike *game, Card from_card, CardOrPlace to) {
 
 
     move_run(from_depot, from_card, to_depot);
-    add_card(show_card(pop_card(from_depot)), from_depot);
+    move_top_card(from_depot, from_depot, SHOW_CARD);
 
+    return true;
+}
+
+bool try_up_card(Klondike *game, Card card) {
+    Depot *from_depot = find_depot_with_card(game, card);
+    if (from_depot == NULL || from_depot->place == STOCK ||
+        (from_depot->place >= HOME1 && from_depot->place <= HOME4) ||
+        !equal_cards(top_card(from_depot), card))
+    {
+        return false;
+    }
+
+    Depot *to_home;
+    switch (get_rank(card)) {
+    case ACE:
+        to_home = find_empty_home(game);
+        break;
+    default:
+        to_home = find_depot_with_card(game, make_card(get_rank(card) - 1, get_suit(card)));
+        if (to_home != NULL && (to_home->place < HOME1 || to_home->place > HOME4)) {
+            to_home = NULL;
+        }
+        break;
+    }
+
+    if (to_home == NULL) {
+        return false;
+    }
+
+    if (!is_legal_move_to_home(card, top_card(to_home))) {
+        return false;
+    }
+
+    move_top_card(from_depot, to_home, JUST_MOVE_CARD);
+    move_top_card(from_depot, from_depot, SHOW_CARD);
     return true;
 }
 
@@ -395,14 +428,19 @@ typedef struct MoveCmd {
     CardOrPlace to;
 } MoveCmd;
 
+typedef struct UpCmd {
+    Card card;
+} UpCmd;
+
 typedef enum CmdKind : byte {
-    CMD_QUIT, CMD_MOVE, CMD_DEAL,
+    CMD_QUIT, CMD_MOVE, CMD_UP, CMD_DEAL,
 } CmdKind;
 
 typedef struct Cmd {
     CmdKind kind;
     union {
         MoveCmd move;
+        UpCmd up;
     };
 } Cmd;
 
@@ -508,10 +546,8 @@ const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
     return parse_card(raw, x);
 }
 
-// MOVE_CMD  ::=  CARD "TO"? (CARD | PLACE)
+// MOVE_CMD  ::= CARD WS ("TO" WS)? (CARD | PLACE) WS?
 bool parse_move_cmd(const char *raw, MoveCmd *cmd) {
-    raw = maybe_skip_ws(raw);
-
     raw = parse_card(raw, &cmd->from);
     if (raw == NULL) { return false; }
 
@@ -528,23 +564,73 @@ bool parse_move_cmd(const char *raw, MoveCmd *cmd) {
 
     raw = maybe_skip_ws(raw);
 
-    return (raw != NULL && raw[0] == 0);
+    return raw[0] == 0;
 }
 
-// CMD  ::=  MOVE_CMD | "DEAL" | "" | "Q" "UIT"?
+// UP_CMD  ::=  CARD (WS "UP")? WS?
+bool parse_up_cmd(const char *raw, UpCmd *cmd) {
+    raw = parse_card(raw, &cmd->card);
+    if (raw == NULL) { return false; }
+
+    if (raw[0] == '\x20' || raw[1] == '\t') {
+        raw = skip_ws(raw);
+
+        if ((raw[0] == 'U' || raw[0] == 'u') && (raw[1] == 'P' || raw[1] == 'p')) {
+            raw = &raw[2];
+        }
+        raw = maybe_skip_ws(raw);
+    }
+
+    return raw[0] == 0;
+}
+
+// DEAL_CMD  ::=  "DEAL"? WS?
+bool parse_deal_cmd(const char *raw) {
+    if (raw[0] == 0) { return true; }
+
+    if (strncmp(raw, "DEAL", sizeof("DEAL")-1) == 0) {
+        raw += sizeof("DEAL")-1;
+        raw = maybe_skip_ws(raw);
+        return raw[0] == 0;
+    }
+
+    return false;
+}
+
+// QUIT_CMD  ::= "Q" "UIT"? WS?
+bool parse_quit_cmd(const char *raw) {
+    if (raw[0] != 'Q') { return false; }
+    raw++;
+
+    if (strncmp(raw, "UIT", sizeof("UIT")-1) == 0) {
+        raw += sizeof("UIT")-1;
+    }
+
+    raw = maybe_skip_ws(raw);
+    return raw[0] == 0;
+}
+
+// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD)
 bool parse_cmd(const char *raw, Cmd *cmd) {
-    if (raw[0] == 0 || strcmp(raw, "DEAL") == 0) {
+    raw = maybe_skip_ws(raw);
+
+    if (parse_deal_cmd(raw)) {
         cmd->kind = CMD_DEAL;
         return true;
     }
 
-    if (strcmp(raw, "Q") == 0 || strcmp(raw, "QUIT") == 0) {
+    if (parse_quit_cmd(raw)) {
         cmd->kind = CMD_QUIT;
         return true;
     }
 
     if (parse_move_cmd(raw, &cmd->move)) {
         cmd->kind = CMD_MOVE;
+        return true;
+    }
+
+    if (parse_up_cmd(raw, &cmd->up)) {
+        cmd->kind = CMD_UP;
         return true;
     }
 
@@ -574,7 +660,32 @@ const char* const TESTING_COMMANDS =
     "\n\n"
     "2c to ac\n"
     "\n\n\n\n\n\n\n"
-    "3c c2\n"
+    "3c up\n"
+    "\n\n\n"
+    "8s TO 9D\n"
+    "\n"
+    "h7 TO 8s\n"
+    "6s TO 7h\n"
+    "\n\n"
+    "10C TO Jh\n"
+    "d9 c10\n"
+    "10h To SJ\n"
+    "7s d8\n"
+    "Ah up\n"
+    "Qh TO Ks\n"
+    "\n"
+    "2d TO 3s\n"
+    "\n\n"
+    "DA\n"
+    "D2\n"
+    "\n\n"
+    " 5D 6s\n"
+    "  C4   3c\n"
+    "5c TO 6h \n"
+    "  deal  \n"
+    "h2 uP   \n"
+    "\n\n\n\n"
+    "s9 H10\n"
 ;
 
 char COMMAND_LINE_BUFFER[64];
@@ -661,6 +772,9 @@ GameResult play_game(FILE *f, Klondike *game, const Card shuffled_deck[static 52
                 break;
             case CMD_MOVE:
                 command_succeeded = try_move_card(game, cmd.move.from, cmd.move.to);
+                break;
+            case CMD_UP:
+                command_succeeded = try_up_card(game, cmd.up.card);
                 break;
             }
 
