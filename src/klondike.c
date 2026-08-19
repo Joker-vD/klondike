@@ -4,6 +4,8 @@
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
 
+#define FOREACH(type, var, arr) for (type var = (arr); var < &(arr)[COUNTOF(arr)]; var++)
+
 typedef unsigned char byte;
 typedef signed char sbyte;
 
@@ -86,8 +88,8 @@ typedef struct Depot {
 void init_depot(Depot *depot, Place place) {
     depot->place = place;
     depot->len = 0;
-    for (byte i = 0; i < COUNTOF(depot->cards); i++) {
-        depot->cards[i] = NO_CARD;
+    FOREACH (Card*, card, depot->cards) {
+        *card = NO_CARD;
     }
 }
 
@@ -187,8 +189,8 @@ typedef struct Klondike {
 } Klondike;
 
 bool is_game_won(const Klondike *game) {
-    for (byte i = 0; i < COUNTOF(game->homes); i++) {
-        if (get_rank(top_card(&game->homes[i])) != KING) {
+    FOREACH (const Depot*, home, game->homes) {
+        if (get_rank(top_card(home)) != KING) {
             return false;
         }
     }
@@ -213,13 +215,11 @@ Depot *place_to_depot(Klondike *game, Place place) {
 Depot *find_depot_with_card(Klondike *game, Card card) {
     if (!is_valid_card(card)) { return NULL; }
 
-    for (byte i = 0; i < COUNTOF(game->piles); i++) {
-        Depot *pile = &game->piles[i];
+    FOREACH (Depot *, pile, game->piles) {
         if (card_index(card, pile) != -1) { return pile; }
     }
 
-    for (byte i = 0; i < COUNTOF(game->homes); i++) {
-        Depot *home = &game->homes[i];
+    FOREACH (Depot *, home, game->homes) {
         if (card_index(card, home) != -1) { return home; }
     }
 
@@ -230,8 +230,7 @@ Depot *find_depot_with_card(Klondike *game, Card card) {
 }
 
 Depot *find_empty_home(Klondike *game) {
-    for (byte i = 0; i < COUNTOF(game->homes); i++) {
-        Depot *home = &game->homes[i];
+    FOREACH (Depot *, home, game->homes) {
         if (is_empty_depot(home)) { return home; }
     }
 
@@ -239,8 +238,7 @@ Depot *find_empty_home(Klondike *game) {
 }
 
 Depot *find_empty_pile(Klondike *game) {
-    for (byte i = 0; i < COUNTOF(game->piles); i++) {
-        Depot *pile = &game->piles[i];
+    FOREACH (Depot *, pile, game->piles) {
         if (is_empty_depot(pile)) { return pile; }
     }
 
@@ -369,24 +367,23 @@ void render_game_state(FILE *f, const Klondike *game) {
     fputc('\x20', f);
     fprint_card(f, top_card(&game->waste));
     fputs("\x20\x20\x20\x20", f);
-    for (byte i = 0; i < COUNTOF(game->homes); i++) {
-        if (i != 0) { fputc('\x20', f); }
-        fprint_card(f, top_card(&game->homes[i]));
+    FOREACH (const Depot *, home, game->homes) {
+        if (home != game->homes) { fputc('\x20', f); }
+        fprint_card(f, top_card(home));
     }
     fputc('\n', f);
 
     for (byte line = 0, empty_piles = 0; empty_piles != COUNTOF(game->piles); line++) {
         empty_piles = 0;
-        for (byte i = 0; i < COUNTOF(game->piles); i++) {
-            const Depot *piles = &game->piles[i];
-            if (i != 0) { fputc('\x20', f); }
+        FOREACH (const Depot *, pile, game->piles) {
+            if (pile != game->piles) { fputc('\x20', f); }
 
-            if (line >= piles->len) {
+            if (line >= pile->len) {
                 empty_piles++;
                 fputc('\x20', f);
                 fputc('\x20', f);
             } else {
-                fprint_card(f, piles->cards[line]);
+                fprint_card(f, pile->cards[line]);
             }
         }
         putc('\n', f);
@@ -519,6 +516,8 @@ bool parse_move_cmd(const char *raw, MoveCmd *cmd) {
     if (raw == NULL) { return false; }
 
     raw = skip_ws(raw);
+    if (raw == NULL) { return false; }
+
     if ((raw[0] == 'T' || raw[0] == 't') && (raw[1] == 'O' || raw[1] == 'o')) {
         raw = skip_ws(&raw[2]);
     }
@@ -569,12 +568,13 @@ const char* const TESTING_COMMANDS =
     "JS TO QD  \n"
     "  AC HOME4\n"
     "DEAL\n"
-    "\n"
-    "invalid\n"
-    "\n"
+    "\n\n"
     "h4 to c5\n"
-    "q\n"
-    "quit\n"
+    "3s TO h4\n"
+    "\n\n"
+    "2c to ac\n"
+    "\n\n\n\n\n\n\n"
+    "3c c2\n"
 ;
 
 char COMMAND_LINE_BUFFER[64];
@@ -607,13 +607,13 @@ void start_game(Klondike *game, const Card deck[static 52]) {
     init_depot(&game->stock, STOCK);
     init_depot(&game->waste, WASTE);
 
-    for (byte i = 0; i < COUNTOF(game->homes); i++) {
-        init_depot(&game->homes[i], HOME1 + i);
+    FOREACH (Depot *, home, game->homes) {
+        init_depot(home, HOME1 + (home - game->homes));
     }
 
     byte deck_index = 0;
-    for (byte i = 0; i < COUNTOF(game->piles); i++) {
-        Depot *pile = &game->piles[i];
+    FOREACH (Depot *, pile, game->piles) {
+        byte i = pile - game->piles;
         init_depot(pile, PILE1 + i);
         for (byte j = 0; j < i; j++) {
             add_card(hide_card(deck[deck_index++]), pile);
