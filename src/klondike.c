@@ -3,6 +3,7 @@
 #include <string.h>
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
+#define LENOF(str)      (COUNTOF(str) - 1)
 
 #define FOREACH(type, var, arr) for (type var = (arr); var < &(arr)[COUNTOF(arr)]; var++)
 
@@ -444,15 +445,28 @@ typedef struct Cmd {
     };
 } Cmd;
 
+const char *maybe_skip_ws(const char *raw) {
+    while (*raw == '\x20' || *raw == '\t') { raw++; }
+    return raw;
+}
+
 const char *skip_ws(const char *raw) {
     const char *orig_raw = raw;
-    while (*raw == '\x20' || *raw == '\t') { raw++; }
+    raw = maybe_skip_ws(raw);
     return raw == orig_raw ? NULL : raw;
 }
 
-const char *maybe_skip_ws(const char* raw) {
-    while (*raw == '\x20' || *raw == '\t') { raw++; }
+const char *maybe_skip_str(const char *raw, const char *str, size_t str_len) {
+    if (strncmp(raw, str, str_len) == 0) {
+        return raw + str_len;
+    }
     return raw;
+}
+
+const char *skip_str(const char *raw, const char *str, size_t str_len) {
+    const char *orig_raw = raw;
+    raw = maybe_skip_str(raw, str, str_len);
+    return raw == orig_raw ? NULL : raw;
 }
 
 // RANK  ::=  ["2".."9"] | "10" | "J" | "Q" | "K" | "A"
@@ -487,7 +501,7 @@ const char *parse_rank(const char *raw, Rank *rank) {
 
 const char *parse_suit(const char *raw, Suit *suit) {
     static const char *PLAIN_SUIT_SYMBOLS = "SCHD";
-    const char *s = strchr(PLAIN_SUIT_SYMBOLS, raw[0]);
+    const char *s = memchr(PLAIN_SUIT_SYMBOLS, raw[0], 4);
     if (s != NULL) {
         *suit = s - PLAIN_SUIT_SYMBOLS;
         return &raw[1];
@@ -525,8 +539,10 @@ const char *parse_card(const char *raw, Card *card) {
 
 // PLACE  ::=  "EMPTY" ["1".."7"]? | "HOME" ["1".."4"]
 const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
-    if (strncmp(raw, "EMPTY", sizeof("EMPTY")-1) == 0) {
-        raw += sizeof("EMPTY")-1;
+    const char *orig_raw = raw;
+
+    raw = maybe_skip_str(raw, "EMPTY", LENOF("EMPTY"));
+    if (raw != orig_raw) {
         if (raw[0] >= '1' && raw[0] <= '7') {
             x->d = PILE1 + (raw[0] - '1');
             return &raw[1];
@@ -535,8 +551,8 @@ const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
         return raw;
     }
 
-    if (strncmp(raw, "HOME", sizeof("HOME")-1) == 0) {
-        raw += sizeof("HOME")-1;
+    raw = maybe_skip_str(raw, "HOME", LENOF("HOME"));
+    if (raw != orig_raw) {
         if (raw[0] >= '1' && raw[0] <= '4') {
             x->d = HOME1 + (raw[0] - '1');
             return &raw[1];
@@ -546,90 +562,88 @@ const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
     return parse_card(raw, x);
 }
 
-// MOVE_CMD  ::= CARD WS ("TO" WS)? (CARD | PLACE) WS?
-bool parse_move_cmd(const char *raw, MoveCmd *cmd) {
+// MOVE_CMD  ::= CARD WS ("TO" WS)? (CARD | PLACE)
+const char *parse_move_cmd(const char *raw, MoveCmd *cmd) {
     raw = parse_card(raw, &cmd->from);
-    if (raw == NULL) { return false; }
+    if (raw == NULL) { return NULL; }
 
     raw = skip_ws(raw);
-    if (raw == NULL) { return false; }
+    if (raw == NULL) { return NULL; }
 
-    if ((raw[0] == 'T' || raw[0] == 't') && (raw[1] == 'O' || raw[1] == 'o')) {
+    if (raw[0] == 'T' && raw[1] == 'O') {
         raw = skip_ws(&raw[2]);
     }
-    if (raw == NULL) { return false; }
+    if (raw == NULL) { return NULL; }
 
     raw = parse_card_or_place(raw, &cmd->to);
-    if (raw == NULL) { return false; }
 
-    raw = maybe_skip_ws(raw);
-
-    return raw[0] == 0;
+    return raw;
 }
 
-// UP_CMD  ::=  CARD (WS "UP")? WS?
-bool parse_up_cmd(const char *raw, UpCmd *cmd) {
+// UP_CMD  ::=  CARD (WS "UP")?
+const char *parse_up_cmd(const char *raw, UpCmd *cmd) {
     raw = parse_card(raw, &cmd->card);
-    if (raw == NULL) { return false; }
+    if (raw == NULL) { return NULL; }
 
     if (raw[0] == '\x20' || raw[1] == '\t') {
         raw = skip_ws(raw);
 
-        if ((raw[0] == 'U' || raw[0] == 'u') && (raw[1] == 'P' || raw[1] == 'p')) {
+        if (raw[0] == 'U' && raw[1] == 'P') {
             raw = &raw[2];
+            return raw;
         }
-        raw = maybe_skip_ws(raw);
+        return NULL;
     }
 
-    return raw[0] == 0;
+    return raw;
 }
 
-// DEAL_CMD  ::=  "DEAL"? WS?
-bool parse_deal_cmd(const char *raw) {
-    if (raw[0] == 0) { return true; }
+// DEAL_CMD  ::=  "DEAL"?
+const char* parse_deal_cmd(const char *raw) {
+    if (raw[0] == 0) { return raw; }
 
-    if (strncmp(raw, "DEAL", sizeof("DEAL")-1) == 0) {
-        raw += sizeof("DEAL")-1;
-        raw = maybe_skip_ws(raw);
-        return raw[0] == 0;
-    }
-
-    return false;
+    raw = skip_str(raw, "DEAL", LENOF("DEAL"));
+    return raw;
 }
 
-// QUIT_CMD  ::= "Q" "UIT"? WS?
-bool parse_quit_cmd(const char *raw) {
+// QUIT_CMD  ::= "Q" "UIT"?
+const char *parse_quit_cmd(const char *raw) {
     if (raw[0] != 'Q') { return false; }
     raw++;
 
-    if (strncmp(raw, "UIT", sizeof("UIT")-1) == 0) {
-        raw += sizeof("UIT")-1;
-    }
+    raw = maybe_skip_str(raw, "UIT", LENOF("UIT"));
+    return raw;
+}
 
+bool parse_ws_eol(const char *raw) {
     raw = maybe_skip_ws(raw);
     return raw[0] == 0;
 }
 
-// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD)
+// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD) WS?
 bool parse_cmd(const char *raw, Cmd *cmd) {
-    raw = maybe_skip_ws(raw);
+    const char *orig_raw = maybe_skip_ws(raw);
 
-    if (parse_deal_cmd(raw)) {
+    raw = parse_deal_cmd(orig_raw);
+    if (raw != NULL && parse_ws_eol(raw)) {
         cmd->kind = CMD_DEAL;
         return true;
     }
 
-    if (parse_quit_cmd(raw)) {
+    raw = parse_quit_cmd(orig_raw);
+    if (raw != NULL && parse_ws_eol(raw)) {
         cmd->kind = CMD_QUIT;
         return true;
     }
 
-    if (parse_move_cmd(raw, &cmd->move)) {
+    raw = parse_move_cmd(orig_raw, &cmd->move);
+    if (raw != NULL && parse_ws_eol(raw)) {
         cmd->kind = CMD_MOVE;
         return true;
     }
 
-    if (parse_up_cmd(raw, &cmd->up)) {
+    raw = parse_up_cmd(orig_raw, &cmd->up);
+    if (raw != NULL && parse_ws_eol(raw)) {
         cmd->kind = CMD_UP;
         return true;
     }
