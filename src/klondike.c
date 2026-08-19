@@ -27,6 +27,10 @@ Rank get_rank(Card card) { return card.d % 16; }
 Suit get_suit(Card card) { return card.d / 16; }
 bool is_face_up(Card card) { return (sbyte)card.d >= 0; }
 
+bool is_black(Card card) { return is_black_suit(get_suit(card)); }
+
+bool equal_cards(Card lhs, Card rhs) { return lhs.d == rhs.d; }
+
 Card hide_card(Card card) { return is_face_up(card) ? (Card){.d = -card.d} : card; }
 Card show_card(Card card) { return is_face_up(card) ? card : (Card){.d = -card.d}; }
 
@@ -35,9 +39,11 @@ typedef Card CardOrPlace;
 typedef enum Place : byte {
     HOME1 = 16 * 4, HOME2, HOME3, HOME4,
     PILE1, PILE2, PILE3, PILE4, PILE5, PILE6, PILE7,
+    STOCK, WASTE,
 } Place;
 
 bool is_place(CardOrPlace x) { return x.d >= HOME1; }
+Place as_place(CardOrPlace place) { return (Place)place.d; };
 
 const char * const SUIT_SYMBOLS[] = {
     [SPADES]    = "\xE2\x99\xA0",
@@ -68,16 +74,41 @@ int fprint_card(FILE *f, Card card) {
         }
         return fprintf(f, "%s%s", CARDBACK, CARDBACK);
     }
-    return fprintf(f, "\x20\x20");
+    return fprintf(f, "__");
 }
 
 typedef struct Depot {
+    Place place;
     byte len;
     Card cards[52];
 } Depot;
 
+void init_depot(Depot *depot, Place place) {
+    depot->place = place;
+    depot->len = 0;
+    for (byte i = 0; i < COUNTOF(depot->cards); i++) {
+        depot->cards[i] = NO_CARD;
+    }
+}
+
 bool is_empty_depot(const Depot *depot) {
     return depot->len == 0;
+}
+
+bool is_home(const Depot *depot) {
+    return depot->place >= HOME1 && depot->place <= HOME4;
+}
+
+bool is_pile(const Depot *depot) {
+    return depot->place >= PILE1 && depot->place <= PILE7;
+}
+
+sbyte card_index(Card card, const Depot *depot) {
+    sbyte i = depot->len;
+
+    while (i --> 0 && !equal_cards(depot->cards[i], card));
+
+    return i;
 }
 
 void add_card(Card card, Depot *depot) {
@@ -97,6 +128,21 @@ Card pop_card(Depot *depot) {
         depot->cards[--depot->len] = NO_CARD;
     }
     return result;
+}
+
+bool is_continuous_run(Card card, const Depot *depot) {
+    bool is_legal_move_to_pile(Card from, Card to);
+
+    sbyte index = card_index(card, depot);
+    if (index < 0) { return false; }
+
+    for (; index + 1 < depot->len; index++) {
+        if (!is_legal_move_to_pile(depot->cards[index + 1], depot->cards[index])) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 typedef enum CardVisibilityAction : byte {
@@ -122,6 +168,18 @@ void move_top_card(Depot *from, Depot *to, CardVisibilityAction card_action) {
     }
 }
 
+void move_run(Depot *from, Card start_card, Depot *to) {
+    sbyte start_index = card_index(start_card, from);
+    if (start_index < 0) { return; }
+
+    for (byte i = start_index; i < from->len; i++) {
+        add_card(from->cards[i], to);
+        from->cards[i] = NO_CARD;
+    }
+
+    from->len = start_index;
+}
+
 typedef struct Klondike {
     Depot stock, waste;
     Depot homes[4];
@@ -136,6 +194,89 @@ bool is_game_won(const Klondike *game) {
     }
 
     return true;
+}
+
+Depot *place_to_depot(Klondike *game, Place place) {
+    if (place >= HOME1 && place <= HOME4) {
+        return &game->homes[place - HOME1];
+    }
+    if (place >= PILE1 && place <= PILE7) {
+        return &game->piles[place - PILE1];
+    }
+
+    if (place == STOCK) { return &game->stock; }
+    if (place == WASTE) { return &game->waste; }
+
+    return NULL;
+}
+
+Depot *find_depot_with_card(Klondike *game, Card card) {
+    if (!is_valid_card(card)) { return NULL; }
+
+    for (byte i = 0; i < COUNTOF(game->piles); i++) {
+        Depot *pile = &game->piles[i];
+        if (card_index(card, pile) != -1) { return pile; }
+    }
+
+    for (byte i = 0; i < COUNTOF(game->homes); i++) {
+        Depot *home = &game->homes[i];
+        if (card_index(card, home) != -1) { return home; }
+    }
+
+    if (card_index(card, &game->waste) != -1) { return &game->waste; }
+    if (card_index(card, &game->stock) != -1) { return &game->stock; }
+
+    return NULL;
+}
+
+Depot *find_empty_home(Klondike *game) {
+    for (byte i = 0; i < COUNTOF(game->homes); i++) {
+        Depot *home = &game->homes[i];
+        if (is_empty_depot(home)) { return home; }
+    }
+
+    return NULL;
+}
+
+Depot *find_empty_pile(Klondike *game) {
+    for (byte i = 0; i < COUNTOF(game->piles); i++) {
+        Depot *pile = &game->piles[i];
+        if (is_empty_depot(pile)) { return pile; }
+    }
+
+    return NULL;
+}
+
+bool is_legal_move_to_pile(Card from, Card to) {
+    if (!is_face_up(from)) {
+        return false;
+    }
+
+    if (!is_valid_card(to)) {
+        return get_rank(from) == KING;
+    }
+
+    if (!is_face_up(to)) {
+        return false;
+    }
+
+    return get_rank(from) + 1 == get_rank(to) && is_black(from) != is_black(to);
+}
+
+bool is_legal_move_to_home(Card from, Card to) {
+    if (!is_face_up(from)) {
+        return false;
+    }
+
+    if (!is_valid_card(to)) {
+        return get_rank(from) == ACE;
+    }
+
+    if (!is_face_up(to)) {
+        return false;
+    }
+
+    return get_rank(from) == get_rank(to) + 1 && get_suit(from) == get_suit(to);
 }
 
 bool try_deal_card(Klondike *game) {
@@ -156,8 +297,71 @@ bool try_deal_card(Klondike *game) {
     return true;
 }
 
-bool try_move_card(Klondike *game, Card from, CardOrPlace to) {
-    return false;
+bool try_move_card(Klondike *game, Card from_card, CardOrPlace to) {
+    Depot *from_depot = find_depot_with_card(game, from_card);
+    if (from_depot == NULL || from_depot->place == STOCK) {
+        return false;
+    }
+
+    Depot *to_depot;
+    Card to_card = NO_CARD;
+
+    if (is_place(to)) {
+        to_depot = place_to_depot(game, as_place(to));
+        if (to_depot == NULL || to_depot->place == STOCK || to_depot->place == WASTE) {
+            return false;
+        }
+        to_card = top_card(to_depot);
+
+    } else if (is_valid_card(to)) {
+        to_depot = find_depot_with_card(game, to);
+        if (to_depot == NULL || to_depot->place == STOCK || to_depot->place == WASTE) {
+            return false;
+        }
+        to_card = to;
+
+    } else {
+        switch (get_rank(from_card)) {
+        case ACE:
+            to_depot = find_empty_home(game);
+            break;
+        case KING:
+            to_depot = find_empty_pile(game);
+            break;
+        default:
+            to_depot = NULL;
+            break;
+        }
+
+        if (to_depot == NULL) {
+            return false;
+        }
+    }
+
+    if (from_depot == to_depot || !equal_cards(top_card(to_depot), to_card)) {
+        return false;
+    }
+
+    if (is_pile(to_depot) && (
+            !is_legal_move_to_pile(from_card, to_card) ||
+            !is_continuous_run(from_card, from_depot)))
+    {
+        return false;
+    }
+
+
+    if (is_home(to_depot) && (
+            !is_legal_move_to_home(from_card, to_card) ||
+            !equal_cards(top_card(from_depot), from_card)))
+    {
+        return false;
+    }
+
+
+    move_run(from_depot, from_card, to_depot);
+    add_card(show_card(pop_card(from_depot)), from_depot);
+
+    return true;
 }
 
 void render_game_state(FILE *f, const Klondike *game) {
@@ -166,6 +370,7 @@ void render_game_state(FILE *f, const Klondike *game) {
     fprint_card(f, top_card(&game->waste));
     fputs("\x20\x20\x20\x20", f);
     for (byte i = 0; i < COUNTOF(game->homes); i++) {
+        if (i != 0) { fputc('\x20', f); }
         fprint_card(f, top_card(&game->homes[i]));
     }
     fputc('\n', f);
@@ -174,11 +379,15 @@ void render_game_state(FILE *f, const Klondike *game) {
         empty_piles = 0;
         for (byte i = 0; i < COUNTOF(game->piles); i++) {
             const Depot *piles = &game->piles[i];
+            if (i != 0) { fputc('\x20', f); }
+
             if (line >= piles->len) {
                 empty_piles++;
+                fputc('\x20', f);
+                fputc('\x20', f);
+            } else {
+                fprint_card(f, piles->cards[line]);
             }
-            if (i != 0) { fputc('\x20', f); }
-            fprint_card(f, piles->cards[line]);
         }
         putc('\n', f);
     }
@@ -214,7 +423,7 @@ const char *maybe_skip_ws(const char* raw) {
 // RANK  ::=  ["2".."9"] | "10" | "J" | "Q" | "K" | "A"
 const char *parse_rank(const char *raw, Rank *rank) {
     if (raw[0] >= '2' && raw[0] <= '9') {
-        *rank = rank[0] - '0';
+        *rank = raw[0] - '0';
         return &raw[1];
     }
 
@@ -361,7 +570,7 @@ const char* const TESTING_COMMANDS =
     "  AC HOME4\n"
     "DEAL\n"
     "\n"
-    "invalid"
+    "invalid\n"
     "\n"
     "h4 to c5\n"
     "q\n"
@@ -395,9 +604,17 @@ char* read_command_line(void) {
 }
 
 void start_game(Klondike *game, const Card deck[static 52]) {
+    init_depot(&game->stock, STOCK);
+    init_depot(&game->waste, WASTE);
+
+    for (byte i = 0; i < COUNTOF(game->homes); i++) {
+        init_depot(&game->homes[i], HOME1 + i);
+    }
+
     byte deck_index = 0;
     for (byte i = 0; i < COUNTOF(game->piles); i++) {
         Depot *pile = &game->piles[i];
+        init_depot(pile, PILE1 + i);
         for (byte j = 0; j < i; j++) {
             add_card(hide_card(deck[deck_index++]), pile);
         }
