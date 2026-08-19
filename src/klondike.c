@@ -1,5 +1,8 @@
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
+
+#define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
 
 typedef unsigned char byte;
 typedef signed char sbyte;
@@ -97,14 +100,14 @@ void render_game_state(FILE *f, const Klondike *game) {
     fputc('\x20', f);
     fprint_card(f, top_card(&game->waste));
     fputs("\x20\x20\x20\x20", f);
-    for (byte i = 0; i < 4; i++) {
+    for (byte i = 0; i < COUNTOF(game->homes); i++) {
         fprint_card(f, top_card(&game->homes[i]));
     }
     fputc('\n', f);
 
-    for (byte line = 0, empty_piles = 0; empty_piles != 7; line++) {
+    for (byte line = 0, empty_piles = 0; empty_piles != COUNTOF(game->piles); line++) {
         empty_piles = 0;
-        for (byte i = 0; i < 7; i++) {
+        for (byte i = 0; i < COUNTOF(game->piles); i++) {
             const Depot *piles = &game->piles[i];
             if (line >= piles->len) {
                 empty_piles++;
@@ -116,7 +119,144 @@ void render_game_state(FILE *f, const Klondike *game) {
     }
 }
 
-Card TESTING_DECK[52] = {
+typedef Card CardOrPlace;
+
+typedef enum Place: byte {
+    HOME1 = 16 * 4, HOME2, HOME3, HOME4,
+    PILE1, PILE2, PILE3, PILE4, PILE5, PILE6, PILE7,
+} Place;
+
+bool is_place(CardOrPlace x) { return x.d >= HOME1; }
+
+typedef struct Cmd {
+    Card from;
+    CardOrPlace to;
+} Cmd;
+
+const char *skip_ws(const char *raw) {
+    const char *orig_raw = raw;
+    while (*raw == '\x20' || *raw == '\t') { raw++; }
+    return raw == orig_raw ? NULL : raw;
+}
+
+const char *maybe_skip_ws(const char* raw) {
+    while (*raw == '\x20' || *raw == '\t') { raw++; }
+    return raw;
+}
+
+// RANK  ::=  ["2".."9"] | "10" | "J" | "Q" | "K" | "A"
+const char *parse_rank(const char *raw, Rank *rank) {
+    if (raw[0] >= '2' && raw[0] <= '9') {
+        *rank = rank[0] - '0';
+        return &raw[1];
+    }
+
+    if (raw[0] == '1' && raw[1] == '0') {
+        *rank = 10;
+        return &raw[2];
+    }
+
+    switch (raw[0]) {
+    case 'J':
+        *rank = 11;
+        return &raw[1];
+    case 'Q':
+        *rank = 12;
+        return &raw[1];
+    case 'K':
+        *rank = 13;
+        return &raw[1];
+    case 'A':
+        *rank = 1;
+        return &raw[1];
+    default:
+        return NULL;
+    }
+}
+
+const char *parse_suit(const char *raw, Suit *suit) {
+    static const char *PLAIN_SUIT_SYMBOLS = "SCHD";
+    const char *s = strchr(PLAIN_SUIT_SYMBOLS, raw[0]);
+    if (s != NULL) {
+        *suit = s - PLAIN_SUIT_SYMBOLS;
+        return &raw[1];
+    }
+
+    for (Suit s = 0; s <= COUNTOF(SUIT_SYMBOLS); s++) {
+        if (strncmp(raw, SUIT_SYMBOLS[s], 3) == 0) {
+            *suit = s;
+            return &raw[3];
+        }
+    }
+
+    return NULL;
+}
+
+// CARD  ::=  RANK SUIT | SUIT RANK
+const char *parse_card(const char *raw, Card *card) {
+    Rank rank = 0;
+    Suit suit = 0;
+    const char *old_raw = raw;
+    raw = parse_rank(raw, &rank);
+
+    if (raw != NULL) {
+        raw = parse_suit(raw, &suit);
+        *card = make_card(rank, suit);
+        return raw;
+    } else {
+        raw = parse_suit(old_raw, &suit);
+        if (raw == NULL) { return NULL; }
+        raw = parse_rank(raw, &rank);
+        *card = make_card(rank, suit);
+        return raw;
+    }
+}
+
+// PLACE  ::=  "EMPTY" ["1".."7"]? | "HOME" ["1".."4"]
+const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
+    if (strncmp(raw, "EMPTY", sizeof("EMPTY")-1) == 0) {
+        raw += sizeof("EMPTY")-1;
+        if (raw[0] >= '1' && raw[0] <= '7') {
+            x->d = PILE1 + (raw[0] - '1');
+            return &raw[1];
+        }
+        x->d = 0;
+        return raw;
+    }
+
+    if (strncmp(raw, "HOME", sizeof("HOME")-1) == 0) {
+        raw += sizeof("HOME")-1;
+        if (raw[0] >= '1' && raw[0] <= '4') {
+            x->d = HOME1 + (raw[0] - '1');
+            return &raw[1];
+        }
+    }
+
+    return parse_card(raw, x);
+}
+
+// CMD  ::=  CARD "TO"? (CARD | PLACE)
+bool parse_cmd(const char *raw, Cmd *cmd) {
+    raw = maybe_skip_ws(raw);
+
+    raw = parse_card(raw, &cmd->from);
+    if (raw == NULL) { return false; }
+
+    raw = skip_ws(raw);
+    if ((raw[0] == 'T' || raw[0] == 't') && (raw[1] == 'O' || raw[1] == 'o')) {
+        raw = skip_ws(&raw[2]);
+    }
+    if (raw == NULL) { return false; }
+
+    raw = parse_card_or_place(raw, &cmd->to);
+    if (raw == NULL) { return false; }
+
+    raw = maybe_skip_ws(raw);
+
+    return (raw != NULL && raw[0] == '\n');
+}
+
+const Card TESTING_DECK[52] = {
      { 60 },
      { 43 }, { 6 },
      { 38 }, { 20 }, { 3 },
@@ -129,11 +269,34 @@ Card TESTING_DECK[52] = {
      { 19 }, { 61 }, { 55 }, { 22 }, { 54 }, { 40 }, { 4 }, { 18 }, { 9 }, { 36 }, { 12 }, { 41 },
 };
 
+const char* const TESTING_COMMANDS =
+    "JS TO QD  \n"
+    "  AC HOME4\n"
+    "DEAL\n"
+;
+
+char COMMAND_LINE_BUFFER[64];
+
+char* read_command_line(void) {
+    static const char *cursor = TESTING_COMMANDS;
+    const char *next_cursor = strchr(cursor, '\n');
+    if (next_cursor != NULL) {
+        next_cursor++;
+        memcpy(COMMAND_LINE_BUFFER, cursor, next_cursor - cursor);
+        COMMAND_LINE_BUFFER[next_cursor - cursor] = 0;
+    } else {
+        COMMAND_LINE_BUFFER[0] = 0;
+    }
+
+    cursor = next_cursor;
+    return COMMAND_LINE_BUFFER;
+}
+
 int main(int argc, char **argv) {
     Klondike game = { 0 };
 
     byte deck_index = 0;
-    for (byte i = 0; i < 7; i++) {
+    for (byte i = 0; i < COUNTOF(game.piles); i++) {
         Depot *pile = &game.piles[i];
         for (byte j = 0; j < i; j++) {
             add_card(flip_card(TESTING_DECK[deck_index++]), pile);
@@ -146,13 +309,19 @@ int main(int argc, char **argv) {
     }
 
     render_game_state(stdout, &game);
+    while (true) {
+        const char *raw = read_command_line();
 
-    add_card(flip_card(pop_card(&game.stock)), &game.waste);
-    render_game_state(stdout, &game);
+        if (raw == NULL) {
+            return 0;
+        }
 
-    add_card(pop_card(&game.piles[6]), &game.homes[0]);
-    add_card(flip_card(pop_card(&game.piles[6])), &game.piles[6]);
-    render_game_state(stdout, &game);
+        Cmd cmd;
+        if (!parse_cmd(raw, &cmd)) {
+            fprintf(stderr, "! %s", raw);
+            return 1;
+        }
+    }
 
     return 0;
 }
