@@ -10,7 +10,7 @@ HEADER_FILES := $(wildcard $(SRC_DIR)/*.h)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SOURCE_FILES))
 
-CFLAGS := -O3
+CFLAGS := -Wall -Wextra -Werror -Wno-unused-parameter -O3
 
 
 build: $(BIN_DIR)/$(TARGET)
