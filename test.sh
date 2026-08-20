@@ -3,7 +3,7 @@
 set -o pipefail
 
 OUTPUT=$(bin/klondike <test.log | tail -n1)
-EXPECTED=$'\aYou won!'
+EXPECTED='You won!'
 
 if [ "$?" != 0 ] ; then exit ; fi
 

@@ -720,34 +720,56 @@ const Card TESTING_DECK[52] = {
 
 char COMMAND_LINE_BUFFER[64];
 
-char* read_command_line(FILE *input, LineBuffer *output) {
+// After reading a line that fits into the buffer, returns the pointer to the LF.
+// After reading an overly long line, writes NUL at the start of the buffer and returns it.
+char *get_short_line(FILE *input, char *buffer, size_t buffer_size) {
+    if (buffer_size == 0) { return NULL; }
+    if (buffer_size == 1) { buffer[0] = 0; return buffer; }
+
+    if (fgets(buffer, buffer_size, input) == NULL) {
+        return NULL;
+    }
+
+    char *newline = strchr(buffer, '\n');
+    if (newline != NULL) {
+        return newline;
+    }
+
+    // Skip overly long line
+    do {
+        if (fgets(buffer, buffer_size, input) == NULL) {
+            return NULL;
+        }
+
+        newline = strchr(buffer, '\n');
+    } while (newline == NULL);
+
+    buffer[0] = 0;
+    return buffer;
+}
+
+char *read_command_line(FILE *input, LineBuffer *output) {
     do {
         if (isatty(fileno(input)) && output->isatty) {
             lb_puts(output, S("> "));
             lb_flush(output);
         }
 
-        if (fgets(COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER), input) == NULL) {
+        char *result = get_short_line(input, COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER));
+        if (result == NULL) {
             return NULL;
         }
 
-        char *newline = strchr(COMMAND_LINE_BUFFER, '\n');
-        if (newline != NULL) {
-            *newline = 0;
-            for (char *s = COMMAND_LINE_BUFFER; s < newline; s++) {
-                if (*s >= 'a' && *s <= 'z') { *s -= 'a' - 'A'; }
-            }
-            return COMMAND_LINE_BUFFER;
+        if (*result != '\n') {
+            continue;
         }
 
-        // Skip overly long line
-        while (newline == NULL) {
-            if (fgets(COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER), input) == NULL) {
-                return NULL;
-            }
-
-            newline = strchr(COMMAND_LINE_BUFFER, '\n');
+        *result = 0;
+        for (char *s = COMMAND_LINE_BUFFER; s < result; s++) {
+            if (*s >= 'a' && *s <= 'z') { *s -= 'a' - 'A'; }
         }
+
+        return COMMAND_LINE_BUFFER;
     } while(true);
 }
 
@@ -827,7 +849,10 @@ int main(int argc, char **argv) {
     LineBuffer output = { .fd = 1, .isatty = isatty(1), 0 };
 
     if (play_game(stdin, &output, &game, TESTING_DECK) == GAME_WON) {
-        lb_puts(&output, S("\aYou won!\n"));
+        if (output.isatty) {
+            lb_putc(&output, '\a');
+        }
+        lb_puts(&output, S("You won!\n"));
     }
 
     return 0;
