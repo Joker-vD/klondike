@@ -30,7 +30,9 @@ Rank get_rank(Card card) { return card.d % 16; }
 Suit get_suit(Card card) { return card.d / 16; }
 bool is_face_up(Card card) { return (sbyte)card.d >= 0; }
 
-bool is_black(Card card) { return is_black_suit(get_suit(card)); }
+bool is_same_suit_colors(Card lhs, Card rhs) {
+    return is_black_suit(get_suit(lhs)) == is_black_suit(get_suit(rhs));
+}
 
 bool equal_cards(Card lhs, Card rhs) { return lhs.d == rhs.d; }
 
@@ -259,7 +261,7 @@ bool is_legal_move_to_pile(Card from, Card to) {
         return false;
     }
 
-    return get_rank(from) + 1 == get_rank(to) && is_black(from) != is_black(to);
+    return get_rank(from) + 1 == get_rank(to) && !is_same_suit_colors(from, to);
 }
 
 bool is_legal_move_to_home(Card from, Card to) {
@@ -501,16 +503,16 @@ const char *parse_rank(const char *raw, Rank *rank) {
 
 const char *parse_suit(const char *raw, Suit *suit) {
     static const char *PLAIN_SUIT_SYMBOLS = "SCHD";
-    const char *s = memchr(PLAIN_SUIT_SYMBOLS, raw[0], 4);
+    const char *s = memchr(PLAIN_SUIT_SYMBOLS, raw[0], strlen(PLAIN_SUIT_SYMBOLS));
     if (s != NULL) {
         *suit = s - PLAIN_SUIT_SYMBOLS;
         return &raw[1];
     }
 
     for (Suit s = 0; s < COUNTOF(SUIT_SYMBOLS); s++) {
-        if (strncmp(raw, SUIT_SYMBOLS[s], 3) == 0) {
+        if (strncmp(raw, SUIT_SYMBOLS[s], strlen(SUIT_SYMBOLS[s])) == 0) {
             *suit = s;
-            return &raw[3];
+            return &raw[strlen(SUIT_SYMBOLS[s])];
         }
     }
 
