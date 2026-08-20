@@ -1,5 +1,4 @@
 #include <stdbool.h>
-#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -910,14 +909,14 @@ GameResult play_game(LineBuffer *input, LineBuffer *output, Klondike *game, cons
 
 int main(int argc, char **argv) {
     Klondike game = { 0 };
-    LineBuffer input  = { .fd = 0, .isatty = isatty(0), 0 };
-    LineBuffer output = { .fd = 1, .isatty = isatty(1), 0 };
+    LineBuffer stdin  = { .fd = 0, .isatty = isatty(0), 0 };
+    LineBuffer stdout = { .fd = 1, .isatty = isatty(1), 0 };
 
-    if (play_game(&input, &output, &game, TESTING_DECK) == GAME_WON) {
-        if (output.isatty) {
-            lb_putc(&output, '\a');
+    if (play_game(&stdin, &stdout, &game, TESTING_DECK) == GAME_WON) {
+        if (stdout.isatty) {
+            lb_putc(&stdout, '\a');
         }
-        lb_puts(&output, S("You won!\n"));
+        lb_puts(&stdout, S("You won!\n"));
     }
 
     return 0;
