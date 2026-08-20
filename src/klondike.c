@@ -1,9 +1,12 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <errno.h>
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
 #define LENOF(str)      (COUNTOF(str) - 1)
+#define S(str)          (str), LENOF(str)
 
 #define FOREACH(type, var, arr) for (type var = (arr); var < &(arr)[COUNTOF(arr)]; var++)
 
@@ -50,6 +53,44 @@ typedef enum Place : byte {
 bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 Place as_place(CardOrPlace place) { return (Place)place.d; };
 
+typedef struct LineBuffer {
+    int fd;
+    bool isatty;
+    int offset;
+    char buffer[256];
+} LineBuffer;
+
+void lb_flush(LineBuffer *lb) {
+    for (int offset = 0, count = lb->offset; count; ) {
+        int wrote = write(lb->fd, &lb->buffer[offset], count);
+
+        if (wrote < 0) {
+            if (errno == EINTR) {
+                wrote = 0;
+                continue;
+            }
+
+            break;
+        }
+
+        offset += wrote;
+        count -= wrote;
+    }
+
+    lb->offset = 0;
+}
+
+void lb_putc(LineBuffer *lb, char ch) {
+    lb->buffer[lb->offset++] = ch;
+    if (lb->offset == sizeof(lb->buffer) || ch == '\n') { lb_flush(lb); }
+}
+
+void lb_puts(LineBuffer *lb, const char *str, size_t str_len) {
+    for (size_t i = 0; i < str_len; i++) {
+        lb_putc(lb, str[i]);
+    }
+}
+
 const char * const SUIT_SYMBOLS[] = {
     [SPADES]    = "\xE2\x99\xA0",
     [CLUBS]     = "\xE2\x99\xA3",
@@ -57,29 +98,36 @@ const char * const SUIT_SYMBOLS[] = {
     [DIAMONDS]  = "\xE2\x99\xA6",
 };
 
-const char * const CARDBACK = "\xE2\x96\x92";
+const char CARDBACK[] = "\xE2\x96\x92";
 
-int fprint_sigil(FILE *f, Card card) {
+void render_sigil(LineBuffer *lb, Card card) {
     Rank rank = get_rank(card);
+    const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
+    static const char *RANK_SYMBOLS = "_A23456789*JQK";
 
-    switch (rank) {
-    case ACE:
-        return fprintf(f, "A%s", SUIT_SYMBOLS[get_suit(card)]);
-    case JACK: case QUEEN: case KING:
-        return fprintf(f, "%c%s", "JQK"[rank - JACK], SUIT_SYMBOLS[get_suit(card)]);
-    default:
-        return fprintf(f, "%d%s", rank, SUIT_SYMBOLS[get_suit(card)]);
+    if (rank == 10) {
+        lb_putc(lb, '1');
+        lb_putc(lb, '0');
+        lb_puts(lb, suit_symbol, strlen(suit_symbol));
+    } else {
+        lb_putc(lb, '\x20');
+        lb_putc(lb, RANK_SYMBOLS[rank]);
+        lb_puts(lb, suit_symbol, strlen(suit_symbol));
     }
 }
 
-int fprint_card(FILE *f, Card card) {
+void render_card(LineBuffer *lb, Card card) {
     if (is_valid_card(card)) {
         if (is_face_up(card)) {
-            return fprint_sigil(f, card);
+            render_sigil(lb, card);
+        } else {
+            lb_puts(lb, S(CARDBACK));
+            lb_puts(lb, S(CARDBACK));
+            lb_puts(lb, S(CARDBACK));
         }
-        return fprintf(f, "%s%s", CARDBACK, CARDBACK);
+    } else {
+        lb_puts(lb, S("___"));
     }
-    return fprintf(f, "__");
 }
 
 typedef struct Depot {
@@ -398,31 +446,35 @@ bool try_up_card(Klondike *game, Card card) {
     return true;
 }
 
-void render_game_state(FILE *f, const Klondike *game) {
-    fprint_card(f, top_card(&game->stock));
-    fputc('\x20', f);
-    fprint_card(f, top_card(&game->waste));
-    fputs("\x20\x20\x20\x20", f);
+void render_game_state(LineBuffer *output, const Klondike *game) {
+    render_card(output, top_card(&game->stock));
+    lb_putc(output, '\x20');
+    render_card(output, top_card(&game->waste));
+    lb_puts(output, S("\x20" "\x20\x20\x20" "\x20"));
     FOREACH (const Depot *, home, game->homes) {
-        if (home != game->homes) { fputc('\x20', f); }
-        fprint_card(f, top_card(home));
+        if (home != game->homes) { lb_putc(output, '\x20'); }
+        render_card(output, top_card(home));
     }
-    fputc('\n', f);
+    lb_putc(output, '\n');
+    lb_putc(output, '\n');
 
     for (byte line = 0, empty_piles = 0; empty_piles != COUNTOF(game->piles); line++) {
         empty_piles = 0;
         FOREACH (const Depot *, pile, game->piles) {
-            if (pile != game->piles) { fputc('\x20', f); }
+            if (pile != game->piles) { lb_putc(output, '\x20'); }
 
             if (line >= pile->len) {
+                if (line == 0) {
+                    render_card(output, NO_CARD);
+                } else {
+                    lb_puts(output, S("\x20\x20\x20"));
+                }
                 empty_piles++;
-                fputc('\x20', f);
-                fputc('\x20', f);
             } else {
-                fprint_card(f, pile->cards[line]);
+                render_card(output, pile->cards[line]);
             }
         }
-        putc('\n', f);
+        lb_putc(output, '\n');
     }
 }
 
@@ -543,7 +595,7 @@ const char *parse_card(const char *raw, Card *card) {
 const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
     const char *orig_raw = raw;
 
-    raw = maybe_skip_str(raw, "EMPTY", LENOF("EMPTY"));
+    raw = maybe_skip_str(raw, S("EMPTY"));
     if (raw != orig_raw) {
         if (raw[0] >= '1' && raw[0] <= '7') {
             x->d = PILE1 + (raw[0] - '1');
@@ -553,7 +605,7 @@ const char *parse_card_or_place(const char *raw, CardOrPlace *x) {
         return raw;
     }
 
-    raw = maybe_skip_str(raw, "HOME", LENOF("HOME"));
+    raw = maybe_skip_str(raw, S("HOME"));
     if (raw != orig_raw) {
         if (raw[0] >= '1' && raw[0] <= '4') {
             x->d = HOME1 + (raw[0] - '1');
@@ -604,7 +656,7 @@ const char *parse_up_cmd(const char *raw, UpCmd *cmd) {
 const char* parse_deal_cmd(const char *raw) {
     if (raw[0] == 0) { return raw; }
 
-    raw = skip_str(raw, "DEAL", LENOF("DEAL"));
+    raw = skip_str(raw, S("DEAL"));
     return raw;
 }
 
@@ -613,7 +665,7 @@ const char *parse_quit_cmd(const char *raw) {
     if (raw[0] != 'Q') { return false; }
     raw++;
 
-    raw = maybe_skip_str(raw, "UIT", LENOF("UIT"));
+    raw = maybe_skip_str(raw, S("UIT"));
     return raw;
 }
 
@@ -668,10 +720,12 @@ const Card TESTING_DECK[52] = {
 
 char COMMAND_LINE_BUFFER[64];
 
-char* read_command_line(FILE *input, FILE *output) {
+char* read_command_line(FILE *input, LineBuffer *output) {
     do {
-        fputs("> ", output);
-        fflush(output);
+        if (isatty(fileno(input)) && output->isatty) {
+            lb_puts(output, S("> "));
+            lb_flush(output);
+        }
 
         if (fgets(COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER), input) == NULL) {
             return NULL;
@@ -724,7 +778,7 @@ typedef enum GameResult : byte {
     GAME_QUIT, GAME_WON,
 } GameResult;
 
-GameResult play_game(FILE *input, FILE *output, Klondike *game, const Card shuffled_deck[static 52]) {
+GameResult play_game(FILE *input, LineBuffer *output, Klondike *game, const Card shuffled_deck[static 52]) {
     start_game(game, TESTING_DECK);
 
     while (true) {
@@ -743,7 +797,7 @@ GameResult play_game(FILE *input, FILE *output, Klondike *game, const Card shuff
 
             Cmd cmd;
             if (!parse_cmd(raw, &cmd)) {
-                fputs("?\n", output);
+                lb_puts(output, S("?\n"));
                 continue;
             }
 
@@ -762,7 +816,7 @@ GameResult play_game(FILE *input, FILE *output, Klondike *game, const Card shuff
             }
 
             if (!command_succeeded) {
-                fputs("!\n", output);
+                lb_puts(output, S("!\n"));
             }
         }
     }
@@ -770,9 +824,10 @@ GameResult play_game(FILE *input, FILE *output, Klondike *game, const Card shuff
 
 int main(int argc, char **argv) {
     Klondike game = { 0 };
+    LineBuffer output = { .fd = 1, .isatty = isatty(1), 0 };
 
-    if (play_game(stdin, stdout, &game, TESTING_DECK) == GAME_WON) {
-        fputs("\aYou won!\n", stdout);
+    if (play_game(stdin, &output, &game, TESTING_DECK) == GAME_WON) {
+        lb_puts(&output, S("\aYou won!\n"));
     }
 
     return 0;
