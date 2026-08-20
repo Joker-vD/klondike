@@ -56,12 +56,13 @@ Place as_place(CardOrPlace place) { return (Place)place.d; };
 typedef struct LineBuffer {
     int fd;
     bool isatty;
-    int offset;
+    short offset;
+    short end;
     char buffer[256];
 } LineBuffer;
 
 void lb_flush(LineBuffer *lb) {
-    for (int offset = 0, count = lb->offset; count; ) {
+    for (short offset = 0, count = lb->offset; count; ) {
         int wrote = write(lb->fd, &lb->buffer[offset], count);
 
         if (wrote < 0) {
@@ -718,54 +719,117 @@ const Card TESTING_DECK[52] = {
      { 19 }, { 61 }, { 55 }, { 22 }, { 54 }, { 40 }, { 4 }, { 18 }, { 9 }, { 36 }, { 12 }, { 41 },
 };
 
-char COMMAND_LINE_BUFFER[64];
+bool lb_fill_rdbuf(LineBuffer *lb) {
+    lb->offset = lb->end = 0;
 
-// After reading a line that fits into the buffer, returns the pointer to the LF.
-// After reading an overly long line, writes NUL at the start of the buffer and returns it.
-char *get_short_line(FILE *input, char *buffer, size_t buffer_size) {
-    if (buffer_size == 0) { return NULL; }
-    if (buffer_size == 1) { buffer[0] = 0; return buffer; }
+    while (true) {
+        int count = read(lb->fd, lb->buffer, sizeof(lb->buffer));
 
-    if (fgets(buffer, buffer_size, input) == NULL) {
-        return NULL;
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            return false;
+        }
+
+        lb->end = count;
+        return true;
+    }
+}
+
+// Reads bytes from the input and writes them into the buffer, until either buffer_size bytes are written,
+// or LF is written, or EOF/error is encountered. Returns the number of bytes written or, if 0 would be
+// returned because of encountering EOF/error early, returns -1 instead.
+int lb_gets(LineBuffer *lb, char *buffer, int buffer_size) {
+    if (buffer_size < 0) { return -1; }
+    if (buffer_size == 0) { return 0; }
+
+    int total_read_count = 0;
+
+    do {
+        if (lb->offset == lb->end) {
+            if (!lb_fill_rdbuf(lb)) {
+                if (total_read_count == 0) { total_read_count = -1; }
+                break;
+            }
+        }
+
+        int len = lb->end - lb->offset;
+        if (len > buffer_size - total_read_count) { len = buffer_size - total_read_count; }
+
+        char *newline = memchr(&lb->buffer[lb->offset], '\n', len);
+        if (newline != NULL) {
+            newline++;
+            len = newline - &lb->buffer[lb->offset];
+            memcpy(buffer, &lb->buffer[lb->offset], len);
+            lb->offset += len;
+            total_read_count += len;
+            break;
+        } else {
+            memcpy(buffer, &lb->buffer[lb->offset], len);
+            buffer += len;
+            lb->offset += len;
+            total_read_count += len;
+        }
+    } while(total_read_count < buffer_size);
+
+    return total_read_count;
+}
+
+// After reading a line that fits into the buffer, returns the number of bytes read.
+// After reading an overly long line, skips it and returns 0. On read error, returns -1.
+int get_short_line(LineBuffer *input, char *buffer, int buffer_size) {
+    if (buffer_size < 0) { return -1; }
+
+    // Any line is overly long for a zero-sized buffer, so skip it, more or less efficiently.
+    if (buffer_size == 0) {
+        static char tmp[64];
+        if (get_short_line(input, tmp, sizeof(tmp)) < 0) {
+            return -1;
+        }
+        return 0;
     }
 
-    char *newline = strchr(buffer, '\n');
-    if (newline != NULL) {
-        return newline;
+    int read_count = lb_gets(input, buffer, buffer_size);
+    if (read_count < 0) {
+        return -1;
+    }
+
+    if (buffer[read_count - 1] == '\n') {
+        return read_count;
     }
 
     // Skip overly long line
     do {
-        if (fgets(buffer, buffer_size, input) == NULL) {
-            return NULL;
+        read_count = lb_gets(input, buffer, buffer_size);
+        if (read_count < 0) {
+            return -1;
         }
+    } while (buffer[read_count - 1] != '\n');
 
-        newline = strchr(buffer, '\n');
-    } while (newline == NULL);
-
-    buffer[0] = 0;
-    return buffer;
+    return 0;
 }
 
-char *read_command_line(FILE *input, LineBuffer *output) {
+char *read_command_line(LineBuffer *input, LineBuffer *output) {
+    static char COMMAND_LINE_BUFFER[64];
+
     do {
-        if (isatty(fileno(input)) && output->isatty) {
+        if (input->isatty && output->isatty) {
             lb_puts(output, S("> "));
             lb_flush(output);
         }
 
-        char *result = get_short_line(input, COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER));
-        if (result == NULL) {
+        int read_count = get_short_line(input, COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER));
+        if (read_count < 0) {
             return NULL;
         }
 
-        if (*result != '\n') {
+        if (read_count == 0) {
             continue;
         }
 
-        *result = 0;
-        for (char *s = COMMAND_LINE_BUFFER; s < result; s++) {
+        COMMAND_LINE_BUFFER[read_count - 1] = 0;
+        for (char *s = COMMAND_LINE_BUFFER; s < &COMMAND_LINE_BUFFER[read_count]; s++) {
             if (*s >= 'a' && *s <= 'z') { *s -= 'a' - 'A'; }
         }
 
@@ -800,7 +864,7 @@ typedef enum GameResult : byte {
     GAME_QUIT, GAME_WON,
 } GameResult;
 
-GameResult play_game(FILE *input, LineBuffer *output, Klondike *game, const Card shuffled_deck[static 52]) {
+GameResult play_game(LineBuffer *input, LineBuffer *output, Klondike *game, const Card shuffled_deck[static 52]) {
     start_game(game, TESTING_DECK);
 
     while (true) {
@@ -846,9 +910,10 @@ GameResult play_game(FILE *input, LineBuffer *output, Klondike *game, const Card
 
 int main(int argc, char **argv) {
     Klondike game = { 0 };
+    LineBuffer input  = { .fd = 0, .isatty = isatty(0), 0 };
     LineBuffer output = { .fd = 1, .isatty = isatty(1), 0 };
 
-    if (play_game(stdin, &output, &game, TESTING_DECK) == GAME_WON) {
+    if (play_game(&input, &output, &game, TESTING_DECK) == GAME_WON) {
         if (output.isatty) {
             lb_putc(&output, '\a');
         }
