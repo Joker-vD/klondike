@@ -98,35 +98,69 @@ const char * const SUIT_SYMBOLS[] = {
     [DIAMONDS]  = "\xE2\x99\xA6",
 };
 
-const char CARDBACK[] = "\xE2\x96\x92";
+const char CARDBACK[]   = "\xE2\x96\x92";
+const char VLINE[]      = "\xE2\x94\x82";
 
-void render_sigil(LineBuffer *lb, Card card) {
+void left_padding(LineBuffer *lb, int field_width, int padding) {
+    while (padding --> field_width) {
+        lb_putc(lb, '\x20');
+    }
+}
+
+void right_padding(LineBuffer *lb, int field_width, int padding) {
+    while (padding ++< -field_width) {
+        lb_putc(lb, '\x20');
+    }
+}
+
+void render_sigil(LineBuffer *lb, Card card, int padding) {
     Rank rank = get_rank(card);
     const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
     static const char *RANK_SYMBOLS = "_A23456789*JQK";
 
     if (rank == 10) {
+        left_padding(lb, 3, padding);
         lb_putc(lb, '1');
         lb_putc(lb, '0');
         lb_puts(lb, suit_symbol, strlen(suit_symbol));
+        right_padding(lb, 3, padding);
     } else {
-        lb_putc(lb, '\x20');
+        left_padding(lb, 2, padding);
         lb_putc(lb, RANK_SYMBOLS[rank]);
         lb_puts(lb, suit_symbol, strlen(suit_symbol));
+        right_padding(lb, 2, padding);
     }
 }
 
 void render_card(LineBuffer *lb, Card card) {
+    static const char * const SUIT_COLORS[] = {
+        [SPADES]    = "30",
+        [CLUBS]     = "34",
+        [HEARTS]    = "31",
+        [DIAMONDS]  = "2;33",
+    };
+
     if (is_valid_card(card)) {
         if (is_face_up(card)) {
-            render_sigil(lb, card);
+            const char *suit_color = SUIT_COLORS[get_suit(card)];
+            lb_puts(lb, S(VLINE));
+            lb_puts(lb, S("\x1B["));
+            lb_puts(lb, suit_color, strlen(suit_color));
+            lb_puts(lb, S(";47m"));
+            render_sigil(lb, card, -3);
+            lb_puts(lb, S("\x1B[m"));
+            lb_puts(lb, S(VLINE));
         } else {
+            lb_puts(lb, S(VLINE));
             lb_puts(lb, S(CARDBACK));
             lb_puts(lb, S(CARDBACK));
             lb_puts(lb, S(CARDBACK));
+            lb_puts(lb, S(VLINE));
         }
     } else {
+        lb_puts(lb, S(VLINE));
         lb_puts(lb, S("___"));
+        lb_puts(lb, S(VLINE));
     }
 }
 
@@ -450,7 +484,7 @@ void render_game_state(LineBuffer *output, const Klondike *game) {
     render_card(output, top_card(&game->stock));
     lb_putc(output, '\x20');
     render_card(output, top_card(&game->waste));
-    lb_puts(output, S("\x20" "\x20\x20\x20" "\x20"));
+    lb_puts(output, S("\x20" "\x20\x20\x20\x20\x20" "\x20"));
     FOREACH (const Depot *, home, game->homes) {
         if (home != game->homes) { lb_putc(output, '\x20'); }
         render_card(output, top_card(home));
@@ -467,7 +501,7 @@ void render_game_state(LineBuffer *output, const Klondike *game) {
                 if (line == 0) {
                     render_card(output, NO_CARD);
                 } else {
-                    lb_puts(output, S("\x20\x20\x20"));
+                    lb_puts(output, S("\x20\x20\x20\x20\x20"));
                 }
                 empty_piles++;
             } else {
@@ -820,6 +854,9 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
 
         int read_count = get_short_line(input, COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER));
         if (read_count < 0) {
+            if (input->isatty && output->isatty) {
+                lb_putc(output, '\n');
+            }
             return NULL;
         }
 
