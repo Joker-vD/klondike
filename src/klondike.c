@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <errno.h>
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
@@ -95,16 +96,6 @@ void lb_puts(LineBuffer *lb, const char *str, size_t str_len) {
     }
 }
 
-const char * const SUIT_SYMBOLS[] = {
-    [SPADES]    = "\xE2\x99\xA0",
-    [CLUBS]     = "\xE2\x99\xA3",
-    [HEARTS]    = "\xE2\x99\xA5",
-    [DIAMONDS]  = "\xE2\x99\xA6",
-};
-
-const char CARDBACK[]   = "\xE2\x96\x92";
-const char VLINE[]      = "\xE2\x94\x82";
-
 void left_padding(LineBuffer *lb, int field_width, int padding) {
     while (padding --> field_width) {
         lb_putc(lb, '\x20');
@@ -117,7 +108,23 @@ void right_padding(LineBuffer *lb, int field_width, int padding) {
     }
 }
 
-void render_sigil(LineBuffer *lb, Card card, int padding) {
+const char * const SUIT_SYMBOLS[] = {
+    [SPADES]    = "\xE2\x99\xA0",
+    [CLUBS]     = "\xE2\x99\xA3",
+    [HEARTS]    = "\xE2\x99\xA5",
+    [DIAMONDS]  = "\xE2\x99\xA6",
+};
+
+const char CARDBACK[]   = "\xE2\x96\x92";
+const char VLINE[]      = "\xE2\x94\x82";
+
+typedef struct Renderer {
+    LineBuffer *lb;
+    bool use_color;
+} Renderer;
+
+void render_sigil(Renderer *renderer, Card card, int padding) {
+    LineBuffer *lb = renderer->lb;
     Rank rank = get_rank(card);
     const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
     static const char *RANK_SYMBOLS = "_A23456789*JQK";
@@ -136,7 +143,7 @@ void render_sigil(LineBuffer *lb, Card card, int padding) {
     }
 }
 
-void render_card(LineBuffer *lb, Card card) {
+void render_card(Renderer *renderer, Card card) {
     static const char * const SUIT_COLORS[] = {
         [SPADES]    = "30",
         [CLUBS]     = "34",
@@ -144,15 +151,21 @@ void render_card(LineBuffer *lb, Card card) {
         [DIAMONDS]  = "2;33",
     };
 
+    LineBuffer *lb = renderer->lb;
+
     if (is_valid_card(card)) {
         if (is_face_up(card)) {
-            const char *suit_color = SUIT_COLORS[get_suit(card)];
             lb_puts(lb, S(VLINE));
-            lb_puts(lb, S("\x1B["));
-            lb_puts(lb, suit_color, strlen(suit_color));
-            lb_puts(lb, S(";47m"));
-            render_sigil(lb, card, -3);
-            lb_puts(lb, S("\x1B[m"));
+            if (renderer->use_color) {
+                const char *suit_color = SUIT_COLORS[get_suit(card)];
+                lb_puts(lb, S("\x1B["));
+                lb_puts(lb, suit_color, strlen(suit_color));
+                lb_puts(lb, S(";47m"));
+            }
+            render_sigil(renderer, card, -3);
+            if (renderer->use_color) {
+                lb_puts(lb, S("\x1B[m"));
+            }
             lb_puts(lb, S(VLINE));
         } else {
             lb_puts(lb, S(VLINE));
@@ -434,14 +447,12 @@ bool try_move_card(Klondike *game, Card from_card, CardOrPlace to) {
         return false;
     }
 
-
     if (is_home(to_depot) && (
             !is_legal_move_to_home(from_card, to_card) ||
             !equal_cards(top_card(from_depot), from_card)))
     {
         return false;
     }
-
 
     move_run(from_depot, from_card, to_depot);
     move_top_card(from_depot, from_depot, SHOW_CARD);
@@ -484,14 +495,16 @@ bool try_up_card(Klondike *game, Card card) {
     return true;
 }
 
-void render_game_state(LineBuffer *output, const Klondike *game) {
-    render_card(output, top_card(&game->stock));
+void render_game_state(Renderer *renderer, const Klondike *game) {
+    LineBuffer *output = renderer->lb;
+
+    render_card(renderer, top_card(&game->stock));
     lb_putc(output, '\x20');
-    render_card(output, top_card(&game->waste));
+    render_card(renderer, top_card(&game->waste));
     lb_puts(output, S("\x20" "\x20\x20\x20\x20\x20" "\x20"));
     FOREACH (const Depot *, home, game->homes) {
         if (home != game->homes) { lb_putc(output, '\x20'); }
-        render_card(output, top_card(home));
+        render_card(renderer, top_card(home));
     }
     lb_putc(output, '\n');
     lb_putc(output, '\n');
@@ -503,13 +516,13 @@ void render_game_state(LineBuffer *output, const Klondike *game) {
 
             if (line >= pile->len) {
                 if (line == 0) {
-                    render_card(output, NO_CARD);
+                    render_card(renderer, NO_CARD);
                 } else {
                     lb_puts(output, S("\x20\x20\x20\x20\x20"));
                     empty_piles++;
                 }
             } else {
-                render_card(output, pile->cards[line]);
+                render_card(renderer, pile->cards[line]);
             }
         }
 
@@ -910,11 +923,13 @@ typedef enum GameResult : byte {
     GAME_QUIT, GAME_WON,
 } GameResult;
 
-GameResult play_game(LineBuffer *input, LineBuffer *output, Klondike *game, const Card shuffled_deck[static 52]) {
+GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, const Card shuffled_deck[static 52]) {
+    LineBuffer *output = renderer->lb;
+
     start_game(game, TESTING_DECK);
 
     while (true) {
-        render_game_state(output, game);
+        render_game_state(renderer, game);
 
         if (is_game_won(game)) {
             return GAME_WON;
@@ -958,8 +973,30 @@ int main(int argc, char **argv) {
     Klondike game = { 0 };
     LineBuffer stdin  = { .fd = 0, .isatty = isatty(0), 0 };
     LineBuffer stdout = { .fd = 1, .isatty = isatty(1), 0 };
+    LineBuffer stderr = { .fd = 2, .isatty = isatty(2), 0 };
+    Renderer renderer = { .lb = &stdout, .use_color = true };
 
-    if (play_game(&stdin, &stdout, &game, TESTING_DECK) == GAME_WON) {
+    {
+        const char *no_color = getenv("NO_COLOR");
+        if (no_color != NULL && no_color[0] != 0) {
+            renderer.use_color = false;
+        }
+        if (!stdout.isatty) {
+            renderer.use_color = false;
+        }
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--use-color") == 0) {
+                renderer.use_color = true;
+            } else {
+                lb_puts(&stderr, S("unrecognized option: "));
+                lb_puts(&stderr, argv[i], strlen(argv[i]));
+                lb_putc(&stderr, '\n');
+                return 1;
+            }
+        }
+    }
+
+    if (play_game(&stdin, &renderer, &game, TESTING_DECK) == GAME_WON) {
         if (stdout.isatty) {
             lb_putc(&stdout, '\a');
         }
