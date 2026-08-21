@@ -80,6 +80,10 @@ void lb_flush(LineBuffer *lb) {
     lb->offset = 0;
 }
 
+void lb_abort(LineBuffer *lb) {
+    lb->offset = 0;
+}
+
 void lb_putc(LineBuffer *lb, char ch) {
     lb->buffer[lb->offset++] = ch;
     if (lb->offset == sizeof(lb->buffer) || ch == '\n') { lb_flush(lb); }
@@ -492,7 +496,7 @@ void render_game_state(LineBuffer *output, const Klondike *game) {
     lb_putc(output, '\n');
     lb_putc(output, '\n');
 
-    for (byte line = 0, empty_piles = 0; empty_piles != COUNTOF(game->piles); line++) {
+    for (byte line = 0, empty_piles = 0; ; line++) {
         empty_piles = 0;
         FOREACH (const Depot *, pile, game->piles) {
             if (pile != game->piles) { lb_putc(output, '\x20'); }
@@ -502,13 +506,19 @@ void render_game_state(LineBuffer *output, const Klondike *game) {
                     render_card(output, NO_CARD);
                 } else {
                     lb_puts(output, S("\x20\x20\x20\x20\x20"));
+                    empty_piles++;
                 }
-                empty_piles++;
             } else {
                 render_card(output, pile->cards[line]);
             }
         }
-        lb_putc(output, '\n');
+
+        if (empty_piles != COUNTOF(game->piles)) {
+            lb_putc(output, '\n');
+        } else {
+            lb_abort(output);
+            break;
+        }
     }
 }
 
