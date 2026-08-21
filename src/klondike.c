@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <time.h>
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
 #define LENOF(str)      (COUNTOF(str) - 1)
@@ -41,6 +42,59 @@ bool equal_cards(Card lhs, Card rhs) { return lhs.d == rhs.d; }
 
 Card hide_card(Card card) { return is_face_up(card) ? (Card){.d = -card.d} : card; }
 Card show_card(Card card) { return is_face_up(card) ? card : (Card){.d = -card.d}; }
+
+bool is_valid_deck(const Card deck[static 52]) {
+    bool seen[16 * 4 + 1] = { 0 };
+    seen[0] = true;
+    for (byte i = 0; i < 4; i++) {
+        seen[i * 16 + 14] = seen[i * 16 + 15] = seen[i * 16 + 16] = true;
+    }
+
+    for (byte i = 0; i < 52; i++) {
+        if (seen[deck[i].d]) { return false; }
+        seen[deck[i].d] = true;
+    }
+
+    for (byte i = 0; i < 64; i++) {
+        if (!seen[i]) { return false; }
+    }
+
+    return true;
+}
+
+void make_shuffled_deck(Card deck[static 52]) {
+    Card *ptr = deck;
+    for (Suit suit = 0; suit < 4; suit++) {
+        for (Rank rank = ACE; rank <= KING; rank++) {
+            *ptr++ = make_card(rank, suit);
+        }
+    }
+
+    srand48(time(0));
+
+    for (byte i = 51; i >= 1; i--) {
+        // generate random r such that 0 <= r <= i and swap deck[i] and deck[r].
+        // This swap may leave the card in place, which is why r <= i, not r < i.
+        byte r;
+        do {
+            if (i >= 32) {
+                r = (unsigned)mrand48() % 64;
+            } else if (i >= 16) {
+                r = (unsigned)mrand48() % 32;
+            } else if (i >= 8) {
+                r = (unsigned)mrand48() % 16;
+            } else if (i >= 4) {
+                r = (unsigned)mrand48() % 8;
+            } else {
+                r = (unsigned)mrand48() % 4;
+            }
+        } while (r > i);
+
+        Card tmp = deck[i];
+        deck[i] = deck[r];
+        deck[r] = tmp;
+    }
+}
 
 typedef Card CardOrPlace;
 
@@ -762,19 +816,6 @@ bool parse_cmd(const char *raw, Cmd *cmd) {
     return false;
 }
 
-const Card TESTING_DECK[52] = {
-     { 60 },
-     { 43 }, { 6 },
-     { 38 }, { 20 }, { 3 },
-     { 1 },  { 10 }, { 52 }, { 44 },
-     { 37 }, { 27 }, { 24 }, { 2 }, { 21 },
-     { 58 }, { 13 }, { 33 }, { 7 }, { 42 }, { 57 },
-     { 25 }, { 29 }, { 23 }, { 51 }, { 56 }, { 17 }, { 11 },
-
-     { 34 }, { 53 }, { 5 }, { 49 }, { 45 }, { 50 }, { 26 }, { 35 }, { 39 }, { 8 }, { 59 }, { 28 },
-     { 19 }, { 61 }, { 55 }, { 22 }, { 54 }, { 40 }, { 4 }, { 18 }, { 9 }, { 36 }, { 12 }, { 41 },
-};
-
 bool lb_fill_rdbuf(LineBuffer *lb) {
     lb->offset = lb->end = 0;
 
@@ -926,7 +967,7 @@ typedef enum GameResult : byte {
 GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, const Card shuffled_deck[static 52]) {
     LineBuffer *output = renderer->lb;
 
-    start_game(game, TESTING_DECK);
+    start_game(game, shuffled_deck);
 
     while (true) {
         render_game_state(renderer, game);
@@ -969,11 +1010,15 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     }
 }
 
+Card deck[52];
+Klondike game;
+LineBuffer stdin, stdout, stderr;
+
 int main(int argc, char **argv) {
-    Klondike game = { 0 };
-    LineBuffer stdin  = { .fd = 0, .isatty = isatty(0), 0 };
-    LineBuffer stdout = { .fd = 1, .isatty = isatty(1), 0 };
-    LineBuffer stderr = { .fd = 2, .isatty = isatty(2), 0 };
+    stdin.fd  = 0; stdin.isatty  = isatty(0);
+    stdout.fd = 1; stdout.isatty = isatty(1);
+    stderr.fd = 2, stderr.isatty = isatty(2);
+
     Renderer renderer = { .lb = &stdout, .use_color = true };
 
     {
@@ -987,16 +1032,51 @@ int main(int argc, char **argv) {
         for (int i = 1; i < argc; i++) {
             if (strcmp(argv[i], "--use-color") == 0) {
                 renderer.use_color = true;
-            } else {
-                lb_puts(&stderr, S("unrecognized option: "));
-                lb_puts(&stderr, argv[i], strlen(argv[i]));
-                lb_putc(&stderr, '\n');
-                return 1;
+                continue;
             }
+            if (strncmp(argv[i], S("--deck")) == 0) {
+                const char *deck_string = NULL;
+                if (argv[i][LENOF("--deck")] == 0) {
+                    if (i == argc - 1) {
+                        lb_puts(&stderr, S("missing value for --deck option\n"));
+                        return 1;
+                    }
+                    deck_string = argv[++i];
+                } else if (argv[i][LENOF("--deck")] == '=') {
+                    deck_string = &argv[i][LENOF("--deck") + 1];
+                }
+                if (deck_string != NULL) {
+                    FOREACH(Card *, card, deck) {
+                        deck_string = parse_card(deck_string, card);
+                        if (deck_string == NULL) {
+                            lb_puts(&stderr, S("invalid value for --deck option\n"));
+                            return 1;
+                        }
+                    }
+                    if (deck_string[0] != 0 || !is_valid_deck(deck)) {
+                        lb_puts(&stderr, S("invalid value for --deck option\n"));
+                        return 1;
+                    }
+                    continue;
+                }
+            }
+
+            lb_puts(&stderr, S("unrecognized option: "));
+            lb_puts(&stderr, argv[i], strlen(argv[i]));
+            lb_putc(&stderr, '\n');
+            return 1;
         }
     }
 
-    if (play_game(&stdin, &renderer, &game, TESTING_DECK) == GAME_WON) {
+    if (!is_valid_card(deck[0])) {
+        make_shuffled_deck(deck);
+        if (!is_valid_deck(deck)) {
+            lb_puts(&stderr, S("bug in a deck shuffler\n"));
+            return 1;
+        }
+    }
+
+    if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (stdout.isatty) {
             lb_putc(&stdout, '\a');
         }
