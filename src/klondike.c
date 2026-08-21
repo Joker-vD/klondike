@@ -599,7 +599,7 @@ typedef struct UpCmd {
 } UpCmd;
 
 typedef enum CmdKind : byte {
-    CMD_QUIT, CMD_MOVE, CMD_UP, CMD_DEAL,
+    CMD_QUIT, CMD_MOVE, CMD_UP, CMD_DEAL, CMD_RESTART,
 } CmdKind;
 
 typedef struct Cmd {
@@ -780,38 +780,38 @@ const char *parse_quit_cmd(const char *raw) {
     return raw;
 }
 
+// RESTART_CMD  ::=  "R" "ESTART"?
+const char *parse_restart_cmd(const char *raw) {
+    if (raw[0] != 'R') { return false; }
+    raw++;
+
+    raw = maybe_skip_str(raw, S("ESTART"));
+    return raw;
+}
+
 bool parse_ws_eol(const char *raw) {
     raw = maybe_skip_ws(raw);
     return raw[0] == 0;
 }
 
-// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD) WS?
+// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD | RESTART_CMD) WS?
 bool parse_cmd(const char *raw, Cmd *cmd) {
     const char *orig_raw = maybe_skip_ws(raw);
 
-    raw = parse_deal_cmd(orig_raw);
-    if (raw != NULL && parse_ws_eol(raw)) {
-        cmd->kind = CMD_DEAL;
-        return true;
+#define CHOICE(parser, result, ...) \
+    raw = (parser)(orig_raw __VA_OPT__(,) __VA_ARGS__); \
+    if (raw != NULL && parse_ws_eol(raw)) { \
+        cmd->kind = (result); \
+        return true; \
     }
 
-    raw = parse_quit_cmd(orig_raw);
-    if (raw != NULL && parse_ws_eol(raw)) {
-        cmd->kind = CMD_QUIT;
-        return true;
-    }
+    CHOICE(parse_deal_cmd, CMD_DEAL);
+    CHOICE(parse_quit_cmd, CMD_QUIT);
+    CHOICE(parse_restart_cmd, CMD_RESTART);
+    CHOICE(parse_move_cmd, CMD_MOVE, &cmd->move);
+    CHOICE(parse_up_cmd, CMD_UP, &cmd->up);
 
-    raw = parse_move_cmd(orig_raw, &cmd->move);
-    if (raw != NULL && parse_ws_eol(raw)) {
-        cmd->kind = CMD_MOVE;
-        return true;
-    }
-
-    raw = parse_up_cmd(orig_raw, &cmd->up);
-    if (raw != NULL && parse_ws_eol(raw)) {
-        cmd->kind = CMD_UP;
-        return true;
-    }
+#undef CHOICE
 
     return false;
 }
@@ -1000,6 +1000,10 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
                 break;
             case CMD_UP:
                 command_succeeded = try_up_card(game, cmd.up.card);
+                break;
+            case CMD_RESTART:
+                start_game(game, shuffled_deck);
+                command_succeeded = true;
                 break;
             }
 
