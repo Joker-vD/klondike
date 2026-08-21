@@ -1,9 +1,9 @@
 #include <stdbool.h>
 #include <string.h>
-#include <unistd.h>
 #include <stdlib.h>
-#include <errno.h>
 #include <time.h>
+
+#include "lbio.h"
 
 #define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
 #define LENOF(str)      (COUNTOF(str) - 1)
@@ -107,61 +107,6 @@ typedef enum Place : byte {
 bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 Place as_place(CardOrPlace place) { return (Place)place.d; };
 
-typedef struct LineBuffer {
-    int fd;
-    bool isatty;
-    short offset;
-    short end;
-    char buffer[256];
-} LineBuffer;
-
-void lb_flush(LineBuffer *lb) {
-    for (short offset = 0, count = lb->offset; count; ) {
-        int wrote = write(lb->fd, &lb->buffer[offset], count);
-
-        if (wrote < 0) {
-            if (errno == EINTR) {
-                wrote = 0;
-                continue;
-            }
-
-            break;
-        }
-
-        offset += wrote;
-        count -= wrote;
-    }
-
-    lb->offset = 0;
-}
-
-void lb_abort(LineBuffer *lb) {
-    lb->offset = 0;
-}
-
-void lb_putc(LineBuffer *lb, char ch) {
-    lb->buffer[lb->offset++] = ch;
-    if (lb->offset == sizeof(lb->buffer) || ch == '\n') { lb_flush(lb); }
-}
-
-void lb_puts(LineBuffer *lb, const char *str, size_t str_len) {
-    for (size_t i = 0; i < str_len; i++) {
-        lb_putc(lb, str[i]);
-    }
-}
-
-void left_padding(LineBuffer *lb, int field_width, int padding) {
-    while (padding --> field_width) {
-        lb_putc(lb, '\x20');
-    }
-}
-
-void right_padding(LineBuffer *lb, int field_width, int padding) {
-    while (padding ++< -field_width) {
-        lb_putc(lb, '\x20');
-    }
-}
-
 const char * const SUIT_SYMBOLS[] = {
     [SPADES]    = "\xE2\x99\xA0",
     [CLUBS]     = "\xE2\x99\xA3",
@@ -184,16 +129,16 @@ void render_sigil(Renderer *renderer, Card card, int padding) {
     static const char *RANK_SYMBOLS = "_A23456789*JQK";
 
     if (rank == 10) {
-        left_padding(lb, 3, padding);
+        lb_pad_left(lb, 3, padding);
         lb_putc(lb, '1');
         lb_putc(lb, '0');
         lb_puts(lb, suit_symbol, strlen(suit_symbol));
-        right_padding(lb, 3, padding);
+        lb_pad_right(lb, 3, padding);
     } else {
-        left_padding(lb, 2, padding);
+        lb_pad_left(lb, 2, padding);
         lb_putc(lb, RANK_SYMBOLS[rank]);
         lb_puts(lb, suit_symbol, strlen(suit_symbol));
-        right_padding(lb, 2, padding);
+        lb_pad_right(lb, 2, padding);
     }
 }
 
@@ -816,63 +761,6 @@ bool parse_cmd(const char *raw, Cmd *cmd) {
     return false;
 }
 
-bool lb_fill_rdbuf(LineBuffer *lb) {
-    lb->offset = lb->end = 0;
-
-    while (true) {
-        int count = read(lb->fd, lb->buffer, sizeof(lb->buffer));
-
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        if (count <= 0) {
-            return false;
-        }
-
-        lb->end = count;
-        return true;
-    }
-}
-
-// Reads bytes from the input and writes them into the buffer, until either buffer_size bytes are written,
-// or LF is written, or EOF/error is encountered. Returns the number of bytes written or, if 0 would be
-// returned because of encountering EOF/error early, returns -1 instead.
-int lb_gets(LineBuffer *lb, char *buffer, int buffer_size) {
-    if (buffer_size < 0) { return -1; }
-    if (buffer_size == 0) { return 0; }
-
-    int total_read_count = 0;
-
-    do {
-        if (lb->offset == lb->end) {
-            if (!lb_fill_rdbuf(lb)) {
-                if (total_read_count == 0) { total_read_count = -1; }
-                break;
-            }
-        }
-
-        int len = lb->end - lb->offset;
-        if (len > buffer_size - total_read_count) { len = buffer_size - total_read_count; }
-
-        char *newline = memchr(&lb->buffer[lb->offset], '\n', len);
-        if (newline != NULL) {
-            newline++;
-            len = newline - &lb->buffer[lb->offset];
-            memcpy(buffer, &lb->buffer[lb->offset], len);
-            lb->offset += len;
-            total_read_count += len;
-            break;
-        } else {
-            memcpy(buffer, &lb->buffer[lb->offset], len);
-            buffer += len;
-            lb->offset += len;
-            total_read_count += len;
-        }
-    } while(total_read_count < buffer_size);
-
-    return total_read_count;
-}
-
 // After reading a line that fits into the buffer, returns the number of bytes read.
 // After reading an overly long line, skips it and returns 0. On read error, returns -1.
 int get_short_line(LineBuffer *input, char *buffer, int buffer_size) {
@@ -911,14 +799,14 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
     static char COMMAND_LINE_BUFFER[64];
 
     do {
-        if (input->isatty && output->isatty) {
+        if (lb_isatty(input) && lb_isatty(output)) {
             lb_puts(output, S("> "));
             lb_flush(output);
         }
 
         int read_count = get_short_line(input, COMMAND_LINE_BUFFER, sizeof(COMMAND_LINE_BUFFER));
         if (read_count < 0) {
-            if (input->isatty && output->isatty) {
+            if (lb_isatty(input) && lb_isatty(output)) {
                 lb_putc(output, '\n');
             }
             return NULL;
@@ -1014,10 +902,6 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     }
 }
 
-Card deck[52];
-Klondike game;
-LineBuffer stdin, stdout, stderr;
-
 typedef struct Config {
     bool use_color;
     bool explicit_deck;
@@ -1035,7 +919,7 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
         if (no_color != NULL && no_color[0] != 0) {
             config->use_color = false;
         } else {
-            config->use_color = stdout.isatty;
+            config->use_color = lb_isatty(ctx->stdout);
         }
 
         config->explicit_deck = false;
@@ -1049,7 +933,7 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
 
         if (strcmp(ctx->argv[argi], "--deck") == 0) {
             if (argi == ctx->argc - 1) {
-                lb_puts(&stderr, S("missing value for --deck option\n"));
+                lb_puts(ctx->stderr, S("missing value for --deck option\n"));
                 return false;
             }
             const char *deck_string = ctx->argv[++argi];
@@ -1057,12 +941,12 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
             for (Card *card = &deck[0]; card < &deck[52]; card++) {
                 deck_string = parse_card(deck_string, card);
                 if (deck_string == NULL) {
-                    lb_puts(&stderr, S("invalid value for --deck option\n"));
+                    lb_puts(ctx->stderr, S("invalid value for --deck option\n"));
                     return false;
                 }
             }
             if (deck_string[0] != 0 || !is_valid_deck(deck)) {
-                lb_puts(&stderr, S("invalid value for --deck option\n"));
+                lb_puts(ctx->stderr, S("invalid value for --deck option\n"));
                 return false;
             }
 
@@ -1070,19 +954,23 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
             continue;
         }
 
-        lb_puts(&stderr, S("unrecognized option: "));
-        lb_puts(&stderr, ctx->argv[argi], strlen(ctx->argv[argi]));
-        lb_putc(&stderr, '\n');
+        lb_puts(ctx->stderr, S("unrecognized option: "));
+        lb_puts(ctx->stderr, ctx->argv[argi], strlen(ctx->argv[argi]));
+        lb_putc(ctx->stderr, '\n');
         return false;
     }
 
     return true;
 }
 
+Card deck[52];
+Klondike game;
+LineBuffer stdin, stdout, stderr;
+
 int main(int argc, char **argv) {
-    stdin.fd  = 0; stdin.isatty  = isatty(0);
-    stdout.fd = 1; stdout.isatty = isatty(1);
-    stderr.fd = 2; stderr.isatty = isatty(2);
+    lb_init_from_fd(&stdin, 0);
+    lb_init_from_fd(&stdout, 1);
+    lb_init_from_fd(&stderr, 2);
 
     Config config;
     if (!init_config(&(ConfigContext){
@@ -1104,7 +992,7 @@ int main(int argc, char **argv) {
     Renderer renderer = { .lb = &stdout, .use_color = config.use_color };
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
-        if (stdout.isatty) {
+        if (lb_isatty(&stdout)) {
             lb_putc(&stdout, '\a');
         }
         lb_puts(&stdout, S("You won!\n"));
