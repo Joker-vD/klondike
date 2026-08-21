@@ -1014,67 +1014,90 @@ Card deck[52];
 Klondike game;
 LineBuffer stdin, stdout, stderr;
 
-int main(int argc, char **argv) {
-    stdin.fd  = 0; stdin.isatty  = isatty(0);
-    stdout.fd = 1; stdout.isatty = isatty(1);
-    stderr.fd = 2, stderr.isatty = isatty(2);
+typedef struct Config {
+    bool use_color;
+    bool explicit_deck;
+} Config;
 
-    Renderer renderer = { .lb = &stdout, .use_color = true };
+typedef struct ConfigContext {
+    LineBuffer *stdin, *stdout, *stderr;
+    int argc;
+    char **argv;
+} ConfigContext;
 
+bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
     {
         const char *no_color = getenv("NO_COLOR");
         if (no_color != NULL && no_color[0] != 0) {
-            renderer.use_color = false;
+            config->use_color = false;
+        } else {
+            config->use_color = stdout.isatty;
         }
-        if (!stdout.isatty) {
-            renderer.use_color = false;
-        }
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--use-color") == 0) {
-                renderer.use_color = true;
-                continue;
-            }
-            if (strncmp(argv[i], S("--deck")) == 0) {
-                const char *deck_string = NULL;
-                if (argv[i][LENOF("--deck")] == 0) {
-                    if (i == argc - 1) {
-                        lb_puts(&stderr, S("missing value for --deck option\n"));
-                        return 1;
-                    }
-                    deck_string = argv[++i];
-                } else if (argv[i][LENOF("--deck")] == '=') {
-                    deck_string = &argv[i][LENOF("--deck") + 1];
-                }
-                if (deck_string != NULL) {
-                    FOREACH(Card *, card, deck) {
-                        deck_string = parse_card(deck_string, card);
-                        if (deck_string == NULL) {
-                            lb_puts(&stderr, S("invalid value for --deck option\n"));
-                            return 1;
-                        }
-                    }
-                    if (deck_string[0] != 0 || !is_valid_deck(deck)) {
-                        lb_puts(&stderr, S("invalid value for --deck option\n"));
-                        return 1;
-                    }
-                    continue;
-                }
-            }
 
-            lb_puts(&stderr, S("unrecognized option: "));
-            lb_puts(&stderr, argv[i], strlen(argv[i]));
-            lb_putc(&stderr, '\n');
-            return 1;
-        }
+        config->explicit_deck = false;
     }
 
-    if (!is_valid_card(deck[0])) {
+    for (int argi = 1; argi < ctx->argc; argi++) {
+        if (strcmp(ctx->argv[argi], "--use-color") == 0) {
+            config->use_color = true;
+            continue;
+        }
+
+        if (strcmp(ctx->argv[argi], "--deck") == 0) {
+            if (argi == ctx->argc - 1) {
+                lb_puts(&stderr, S("missing value for --deck option\n"));
+                return false;
+            }
+            const char *deck_string = ctx->argv[++argi];
+
+            for (Card *card = &deck[0]; card < &deck[52]; card++) {
+                deck_string = parse_card(deck_string, card);
+                if (deck_string == NULL) {
+                    lb_puts(&stderr, S("invalid value for --deck option\n"));
+                    return false;
+                }
+            }
+            if (deck_string[0] != 0 || !is_valid_deck(deck)) {
+                lb_puts(&stderr, S("invalid value for --deck option\n"));
+                return false;
+            }
+
+            config->explicit_deck = true;
+            continue;
+        }
+
+        lb_puts(&stderr, S("unrecognized option: "));
+        lb_puts(&stderr, ctx->argv[argi], strlen(ctx->argv[argi]));
+        lb_putc(&stderr, '\n');
+        return false;
+    }
+
+    return true;
+}
+
+int main(int argc, char **argv) {
+    stdin.fd  = 0; stdin.isatty  = isatty(0);
+    stdout.fd = 1; stdout.isatty = isatty(1);
+    stderr.fd = 2; stderr.isatty = isatty(2);
+
+    Config config;
+    if (!init_config(&(ConfigContext){
+        .stdin = &stdin, .stdout = &stdout, .stderr = &stderr,
+        .argc = argc, .argv = argv,
+    }, &config, deck))
+    {
+        return 1;
+    }
+
+    if (!config.explicit_deck) {
         make_shuffled_deck(deck);
         if (!is_valid_deck(deck)) {
             lb_puts(&stderr, S("bug in a deck shuffler\n"));
             return 1;
         }
     }
+
+    Renderer renderer = { .lb = &stdout, .use_color = config.use_color };
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (stdout.isatty) {
