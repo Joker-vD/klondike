@@ -117,13 +117,7 @@ const char * const SUIT_SYMBOLS[] = {
 const char CARDBACK[]   = "\xE2\x96\x92";
 const char VLINE[]      = "\xE2\x94\x82";
 
-typedef struct Renderer {
-    LineBuffer *lb;
-    bool use_color;
-} Renderer;
-
-void render_sigil(Renderer *renderer, Card card, int padding) {
-    LineBuffer *lb = renderer->lb;
+void print_sigil(LineBuffer *lb, Card card, int padding) {
     Rank rank = get_rank(card);
     const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
     static const char *RANK_SYMBOLS = "_A23456789*JQK";
@@ -142,7 +136,16 @@ void render_sigil(Renderer *renderer, Card card, int padding) {
     }
 }
 
-void render_card(Renderer *renderer, Card card) {
+typedef struct Renderer {
+    LineBuffer *lb;
+    bool use_color;
+
+    sbyte card_width;
+    sbyte gap_height;
+    void (*render_card)(struct Renderer *renderer, Card card);
+} Renderer;
+
+void render_small_card(Renderer *renderer, Card card) {
     static const char * const SUIT_COLORS[] = {
         [SPADES]    = "30",
         [CLUBS]     = "34",
@@ -161,21 +164,23 @@ void render_card(Renderer *renderer, Card card) {
                 lb_puts(lb, suit_color, strlen(suit_color));
                 lb_puts(lb, S(";47m"));
             }
-            render_sigil(renderer, card, -3);
+            print_sigil(lb, card, -(renderer->card_width - 2));
             if (renderer->use_color) {
                 lb_puts(lb, S("\x1B[m"));
             }
             lb_puts(lb, S(VLINE));
         } else {
             lb_puts(lb, S(VLINE));
-            lb_puts(lb, S(CARDBACK));
-            lb_puts(lb, S(CARDBACK));
-            lb_puts(lb, S(CARDBACK));
+            for (sbyte i = 0; i < renderer->card_width - 2; i++) {
+                lb_puts(lb, S(CARDBACK));
+            }
             lb_puts(lb, S(VLINE));
         }
     } else {
         lb_puts(lb, S(VLINE));
-        lb_puts(lb, S("___"));
+        for (sbyte i = 0; i < renderer->card_width - 2; i++) {
+            lb_putc(lb, '_');
+        }
         lb_puts(lb, S(VLINE));
     }
 }
@@ -497,16 +502,18 @@ bool try_up_card(Klondike *game, Card card) {
 void render_game_state(Renderer *renderer, const Klondike *game) {
     LineBuffer *output = renderer->lb;
 
-    render_card(renderer, top_card(&game->stock));
+    renderer->render_card(renderer, top_card(&game->stock));
     lb_putc(output, '\x20');
-    render_card(renderer, top_card(&game->waste));
-    lb_puts(output, S("\x20" "\x20\x20\x20\x20\x20" "\x20"));
+    renderer->render_card(renderer, top_card(&game->waste));
+    lb_pad_left(output, 0, renderer->card_width + 2);
     FOREACH (const Depot *, home, game->homes) {
         if (home != game->homes) { lb_putc(output, '\x20'); }
-        render_card(renderer, top_card(home));
+        renderer->render_card(renderer, top_card(home));
     }
     lb_putc(output, '\n');
-    lb_putc(output, '\n');
+    for (sbyte i = 0; i < renderer->gap_height; i++) {
+        lb_putc(output, '\n');
+    }
 
     for (byte line = 0, empty_piles = 0; ; line++) {
         empty_piles = 0;
@@ -515,13 +522,13 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
 
             if (line >= pile->len) {
                 if (line == 0) {
-                    render_card(renderer, NO_CARD);
+                    renderer->render_card(renderer, NO_CARD);
                 } else {
-                    lb_puts(output, S("\x20\x20\x20\x20\x20"));
+                    lb_pad_left(output, 0, renderer->card_width);
                     empty_piles++;
                 }
             } else {
-                render_card(renderer, pile->cards[line]);
+                renderer->render_card(renderer, pile->cards[line]);
             }
         }
 
@@ -990,6 +997,10 @@ int main(int argc, char **argv) {
     }
 
     Renderer renderer = { .lb = &stdout, .use_color = config.use_color };
+
+    renderer.card_width = 5;
+    renderer.gap_height = 1;
+    renderer.render_card = render_small_card;
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (lb_isatty(&stdout)) {

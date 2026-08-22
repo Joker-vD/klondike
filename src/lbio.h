@@ -19,7 +19,9 @@ void lb_abort(LineBuffer *lb);
 void lb_putc(LineBuffer *lb, char ch);
 void lb_puts(LineBuffer *lb, const char *str, size_t str_len);
 
+// If padding is positive, prints max(0, padding - field_width) spaces
 void lb_pad_left(LineBuffer *lb, int field_width, int padding);
+// If padding is negative, prints max(0, abs(padding) - field_width) spaces
 void lb_pad_right(LineBuffer *lb, int field_width, int padding);
 
 // Reads bytes from the input and writes them into the buffer, until either buffer_size bytes are written,
