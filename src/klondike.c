@@ -582,35 +582,48 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
         lb_putc(output, '\n');
     }
 
-    for (byte card_index = 0, empty_piles = 0; ; card_index++) {
-        empty_piles = 0;
-        for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
-            FOREACH (const Depot *, pile, game->piles) {
-                if (pile != game->piles) { lb_putc(output, '\x20'); }
-
-                if (card_index >= pile->len) {
-                    if (card_index == 0) {
-                        renderer->render_card(renderer, NO_CARD, scanline);
-                    } else {
-                        lb_repc(output, '\x20', renderer->card_width);
-                        empty_piles++;
-                    }
-                } else {
-                    renderer->render_card(renderer, pile->cards[card_index], scanline);
-                }
-            }
-
-            if (empty_piles != COUNTOF(game->piles)) {
-                lb_putc(output, '\n');
-            } else {
-                lb_abort(output);
-                break;
-            }
+    // Several overlapping cards can occupy the same screen line, but only the top-most one
+    // needs to be drawn
+    for (short screen_line = 0; screen_line < 100; screen_line++) {
+        // Can probably calculated once, in the renderer, and without any divisions but eh
+        short min_card_index = (screen_line - (renderer->card_height - renderer->card_peeking)) / renderer->card_peeking;
+        if (min_card_index < 0) { min_card_index = 0; }
+        short max_card_index = screen_line / renderer->card_peeking;
+        int max_depot_len = COUNTOF(((Depot*)(NULL))->cards);
+        if (max_card_index >= max_depot_len) {
+            max_card_index = max_depot_len - 1;
         }
 
+        int empty_piles = 0;
+        FOREACH (const Depot *, pile, game->piles) {
+            if (min_card_index != 0 && min_card_index >= pile->len) {
+                empty_piles++;
+            }
+        }
         if (empty_piles == COUNTOF(game->piles)) {
             break;
         }
+
+        FOREACH (const Depot *, pile, game->piles) {
+            if (pile != game->piles) { lb_putc(output, '\x20'); }
+
+            sbyte card_index = max_card_index;
+            if (card_index >= pile->len) { card_index = pile->len - 1; }
+            if (card_index < min_card_index) { card_index = min_card_index; }
+            sbyte scanline = screen_line - card_index * renderer->card_peeking;
+
+            if (card_index >= pile->len) {
+                if (card_index == 0) {
+                    renderer->render_card(renderer, NO_CARD, scanline);
+                } else {
+                    lb_repc(output, '\x20', renderer->card_width);
+                }
+            } else {
+                renderer->render_card(renderer, pile->cards[card_index], scanline);
+            }
+        }
+
+        lb_putc(output, '\n');
     }
 }
 

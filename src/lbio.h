@@ -14,7 +14,6 @@ void lb_init_from_fd(LineBuffer *lb, int fd);
 bool lb_isatty(LineBuffer *lb);
 
 void lb_flush(LineBuffer *lb);
-void lb_abort(LineBuffer *lb);
 
 void lb_putc(LineBuffer *lb, char ch);
 void lb_puts(LineBuffer *lb, const char *str, size_t str_len);

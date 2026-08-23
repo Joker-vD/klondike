@@ -57,11 +57,6 @@ void lb_flush(LineBuffer *blob) {
     lb->offset = 0;
 }
 
-void lb_abort(LineBuffer *blob) {
-    RECAST;
-    lb->offset = 0;
-}
-
 void lb_putc(LineBuffer *blob, char ch) {
     RECAST;
     lb->buffer[lb->offset++] = ch;
@@ -102,14 +97,14 @@ void lb_reps(LineBuffer *blob, const char *str, size_t str_len, int count) {
 }
 
 void lb_pad_left(LineBuffer *blob, int field_width, int padding) {
-    while (padding --> field_width) {
-        lb_putc(blob, '\x20');
+    if (padding > 0) {
+        lb_repc(blob, '\x20', padding - field_width);
     }
 }
 
 void lb_pad_right(LineBuffer *blob, int field_width, int padding) {
-    while (padding ++< -field_width) {
-        lb_putc(blob, '\x20');
+    if (padding < 0) {
+        lb_repc(blob, '\x20', -padding - field_width);
     }
 }
 
