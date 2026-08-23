@@ -74,6 +74,33 @@ void lb_puts(LineBuffer *blob, const char *str, size_t str_len) {
     }
 }
 
+void lb_repc(LineBuffer *blob, char ch, int count) {
+    if (ch == '\n') {
+        for (int i = 0; i < count; i++) {
+            lb_putc(blob, ch);
+        }
+        return;
+    }
+
+    RECAST;
+    while (count > 0) {
+        int chunk = sizeof(lb->buffer) - lb->offset;
+        if (chunk > count) { chunk = count; }
+
+        memset(&lb->buffer[lb->offset], ch, chunk);
+        lb->offset += chunk;
+        count -= chunk;
+
+        if (lb->offset == sizeof(lb->buffer)) { lb_flush(blob); }
+    }
+}
+
+void lb_reps(LineBuffer *blob, const char *str, size_t str_len, int count) {
+    for (int i = 0; i < count; i++) {
+        lb_puts(blob, str, str_len);
+    }
+}
+
 void lb_pad_left(LineBuffer *blob, int field_width, int padding) {
     while (padding --> field_width) {
         lb_putc(blob, '\x20');

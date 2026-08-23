@@ -18,6 +18,8 @@ void lb_abort(LineBuffer *lb);
 
 void lb_putc(LineBuffer *lb, char ch);
 void lb_puts(LineBuffer *lb, const char *str, size_t str_len);
+void lb_repc(LineBuffer *lb, char ch, int count);
+void lb_reps(LineBuffer *lb, const char *str, size_t str_len, int count);
 
 // If padding is positive, prints max(0, padding - field_width) spaces
 void lb_pad_left(LineBuffer *lb, int field_width, int padding);

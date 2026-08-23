@@ -114,9 +114,6 @@ const char * const SUIT_SYMBOLS[] = {
     [DIAMONDS]  = "\xE2\x99\xA6",
 };
 
-const char CARDBACK[]   = "\xE2\x96\x92";
-const char VLINE[]      = "\xE2\x94\x82";
-
 void print_sigil(LineBuffer *lb, Card card, int padding) {
     Rank rank = get_rank(card);
     const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
@@ -141,18 +138,28 @@ typedef struct Renderer {
     bool use_color;
 
     sbyte card_width;
+    sbyte card_height;
+    sbyte card_peeking;
     sbyte gap_height;
-    void (*render_card)(struct Renderer *renderer, Card card);
+    void (*render_card)(struct Renderer *renderer, Card card, sbyte scanline);
 } Renderer;
 
-void render_small_card(Renderer *renderer, Card card) {
-    static const char * const SUIT_COLORS[] = {
-        [SPADES]    = "30",
-        [CLUBS]     = "34",
-        [HEARTS]    = "31",
-        [DIAMONDS]  = "2;33",
-    };
+const char * const SUIT_COLORS[] = {
+    [SPADES]    = "30",
+    [CLUBS]     = "34",
+    [HEARTS]    = "31",
+    [DIAMONDS]  = "2;33",
+};
 
+const char CARDBACK[]   = "\xE2\x96\x92";
+const char HLINE[]      = "\xE2\x94\x80";
+const char VLINE[]      = "\xE2\x94\x82";
+const char CORNER_TL[]  = "\xE2\x94\x8C";
+const char CORNER_TR[]  = "\xE2\x94\x90";
+const char CORNER_BL[]  = "\xE2\x94\x94";
+const char CORNER_BR[]  = "\xE2\x94\x98";
+
+void render_small_card(Renderer *renderer, Card card, sbyte scanline) {
     LineBuffer *lb = renderer->lb;
 
     if (is_valid_card(card)) {
@@ -171,18 +178,75 @@ void render_small_card(Renderer *renderer, Card card) {
             lb_puts(lb, S(VLINE));
         } else {
             lb_puts(lb, S(VLINE));
-            for (sbyte i = 0; i < renderer->card_width - 2; i++) {
-                lb_puts(lb, S(CARDBACK));
-            }
+            lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
             lb_puts(lb, S(VLINE));
         }
     } else {
         lb_puts(lb, S(VLINE));
-        for (sbyte i = 0; i < renderer->card_width - 2; i++) {
-            lb_putc(lb, '_');
-        }
+        lb_repc(lb, '_', renderer->card_width - 2);
         lb_puts(lb, S(VLINE));
     }
+}
+
+void init_small_card_renderer(Renderer *renderer) {
+    renderer->card_width = 5;
+    renderer->card_height = 1;
+    renderer->card_peeking = 1;
+    renderer->gap_height = 1;
+    renderer->render_card = render_small_card;
+}
+
+void render_normal_card(Renderer *renderer, Card card, sbyte scanline) {
+    LineBuffer *lb = renderer->lb;
+
+    if (scanline == 0) {
+        lb_puts(lb, S(CORNER_TL));
+        if (is_valid_card(card)) {
+            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        lb_puts(lb, S(CORNER_TR));
+    } else if (scanline == renderer->card_height - 1) {
+        lb_puts(lb, S(CORNER_BL));
+        if (is_valid_card(card)) {
+            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        lb_puts(lb, S(CORNER_BR));
+    } else if (is_valid_card(card) && is_face_up(card)) {
+        lb_puts(lb, S(VLINE));
+        if (renderer->use_color) {
+            const char *suit_color = SUIT_COLORS[get_suit(card)];
+            lb_puts(lb, S("\x1B["));
+            lb_puts(lb, suit_color, strlen(suit_color));
+            lb_puts(lb, S(";47m"));
+        }
+        if (scanline == 1) {
+            print_sigil(lb, card, -(renderer->card_width - 2));
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        if (renderer->use_color) {
+            lb_puts(lb, S("\x1b[m"));
+        }
+        lb_puts(lb, S(VLINE));
+    } else if (is_valid_card(card)) {
+        lb_puts(lb, S(VLINE));
+        lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
+        lb_puts(lb, S(VLINE));
+    } else {
+        lb_repc(lb, '\x20', renderer->card_width);
+    }
+}
+
+void init_normal_card_renderer(Renderer *renderer) {
+    renderer->card_width = 5;
+    renderer->card_height = 4;
+    renderer->card_peeking = 2;
+    renderer->gap_height = 1;
+    renderer->render_card = render_normal_card;
 }
 
 typedef struct Depot {
@@ -502,40 +566,49 @@ bool try_up_card(Klondike *game, Card card) {
 void render_game_state(Renderer *renderer, const Klondike *game) {
     LineBuffer *output = renderer->lb;
 
-    renderer->render_card(renderer, top_card(&game->stock));
-    lb_putc(output, '\x20');
-    renderer->render_card(renderer, top_card(&game->waste));
-    lb_pad_left(output, 0, renderer->card_width + 2);
-    FOREACH (const Depot *, home, game->homes) {
-        if (home != game->homes) { lb_putc(output, '\x20'); }
-        renderer->render_card(renderer, top_card(home));
+    for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
+        renderer->render_card(renderer, top_card(&game->stock), scanline);
+        lb_putc(output, '\x20');
+        renderer->render_card(renderer, top_card(&game->waste), scanline);
+        lb_repc(output, '\x20', renderer->card_width + 2);
+        FOREACH (const Depot *, home, game->homes) {
+            if (home != game->homes) { lb_putc(output, '\x20'); }
+            renderer->render_card(renderer, top_card(home), scanline);
+        }
+        lb_putc(output, '\n');
     }
-    lb_putc(output, '\n');
+
     for (sbyte i = 0; i < renderer->gap_height; i++) {
         lb_putc(output, '\n');
     }
 
-    for (byte line = 0, empty_piles = 0; ; line++) {
+    for (byte card_index = 0, empty_piles = 0; ; card_index++) {
         empty_piles = 0;
-        FOREACH (const Depot *, pile, game->piles) {
-            if (pile != game->piles) { lb_putc(output, '\x20'); }
+        for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
+            FOREACH (const Depot *, pile, game->piles) {
+                if (pile != game->piles) { lb_putc(output, '\x20'); }
 
-            if (line >= pile->len) {
-                if (line == 0) {
-                    renderer->render_card(renderer, NO_CARD);
+                if (card_index >= pile->len) {
+                    if (card_index == 0) {
+                        renderer->render_card(renderer, NO_CARD, scanline);
+                    } else {
+                        lb_repc(output, '\x20', renderer->card_width);
+                        empty_piles++;
+                    }
                 } else {
-                    lb_pad_left(output, 0, renderer->card_width);
-                    empty_piles++;
+                    renderer->render_card(renderer, pile->cards[card_index], scanline);
                 }
+            }
+
+            if (empty_piles != COUNTOF(game->piles)) {
+                lb_putc(output, '\n');
             } else {
-                renderer->render_card(renderer, pile->cards[line]);
+                lb_abort(output);
+                break;
             }
         }
 
-        if (empty_piles != COUNTOF(game->piles)) {
-            lb_putc(output, '\n');
-        } else {
-            lb_abort(output);
+        if (empty_piles == COUNTOF(game->piles)) {
             break;
         }
     }
@@ -996,11 +1069,8 @@ int main(int argc, char **argv) {
         }
     }
 
-    Renderer renderer = { .lb = &stdout, .use_color = config.use_color };
-
-    renderer.card_width = 5;
-    renderer.gap_height = 1;
-    renderer.render_card = render_small_card;
+    Renderer renderer = { .lb = &stdout, .use_color = config.use_color, 0 };
+    init_normal_card_renderer(&renderer);
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (lb_isatty(&stdout)) {
