@@ -982,9 +982,14 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     }
 }
 
+typedef enum CardSize : byte {
+    CARD_SIZE_SMALL, CARD_SIZE_NORMAL,
+} CardSize;
+
 typedef struct Config {
     bool use_color;
     bool explicit_deck;
+    CardSize card_size;
 } Config;
 
 typedef struct ConfigContext {
@@ -1003,11 +1008,22 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
         }
 
         config->explicit_deck = false;
+        config->card_size = CARD_SIZE_NORMAL;
     }
 
     for (int argi = 1; argi < ctx->argc; argi++) {
         if (strcmp(ctx->argv[argi], "--use-color") == 0) {
             config->use_color = true;
+            continue;
+        }
+
+        if (strcmp(ctx->argv[argi], "--small") == 0) {
+            config->card_size = CARD_SIZE_SMALL;
+            continue;
+        }
+
+        if (strcmp(ctx->argv[argi], "--normal") == 0) {
+            config->card_size = CARD_SIZE_NORMAL;
             continue;
         }
 
@@ -1070,7 +1086,14 @@ int main(int argc, char **argv) {
     }
 
     Renderer renderer = { .lb = &stdout, .use_color = config.use_color, 0 };
-    init_normal_card_renderer(&renderer);
+    switch (config.card_size) {
+    case CARD_SIZE_SMALL:
+        init_small_card_renderer(&renderer);
+        break;
+    case CARD_SIZE_NORMAL:
+        init_normal_card_renderer(&renderer);
+        break;
+    }
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (lb_isatty(&stdout)) {

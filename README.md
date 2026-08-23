@@ -18,6 +18,8 @@ The game recognizes the [`NO_COLOR` environment variable](https://no-color.org/)
 
 The `--deck` option takes a string representation of an ordered deck to use instead of a random shuffle (e.g. `--deck AS10DKH...`).
 
+The visual size of the cards can be changed by supplying either a `--small` (5x1 cards) or a `--normal` (5x4 cards) option. By default, the `--normal` option is used.
+
 ## Gameplay
 
 After you enter a valid move, it will be performed and the updated game state will be printed. If you enter an invalid move, it won't be performed but an exclamation mark `!` will be printed instead. If you enter a completely unrecognized command, a question mark `?` will be printed.
