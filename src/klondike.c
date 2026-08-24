@@ -141,6 +141,7 @@ typedef struct Renderer {
     sbyte card_height;
     sbyte card_peeking;
     sbyte gap_height;
+    sbyte show_bottom_sigil;
     void (*render_card)(struct Renderer *renderer, Card card, sbyte scanline);
 } Renderer;
 
@@ -159,32 +160,86 @@ const char CORNER_TR[]  = "\xE2\x94\x90";
 const char CORNER_BL[]  = "\xE2\x94\x94";
 const char CORNER_BR[]  = "\xE2\x94\x98";
 
-void render_small_card(Renderer *renderer, Card card, sbyte scanline) {
+typedef enum JustifyKind : sbyte {
+    JUSTIFY_LEFT = -1, JUSTIFY_RIGHT = 1,
+} JustifyKind;
+
+void render_card_sigil(Renderer *renderer, Card card, JustifyKind justify) {
     LineBuffer *lb = renderer->lb;
 
+    lb_puts(lb, S(VLINE));
+
+    if (renderer->use_color) {
+        const char *suit_color = SUIT_COLORS[get_suit(card)];
+        lb_puts(lb, S("\x1B["));
+        lb_puts(lb, suit_color, strlen(suit_color));
+        lb_puts(lb, S(";47m"));
+    }
+
+    print_sigil(lb, card, justify * (renderer->card_width - 2));
+
+    if (renderer->use_color) {
+        lb_puts(lb, S("\x1B[m"));
+    }
+
+    lb_puts(lb, S(VLINE));
+}
+
+void render_card_blank_face(Renderer *renderer) {
+    LineBuffer *lb = renderer->lb;
+
+    lb_puts(lb, S(VLINE));
+
+    if (renderer->use_color) {
+        lb_puts(lb, S("\x1B[47m"));
+    }
+
+    lb_repc(lb, '\x20', renderer->card_width - 2);
+
+    if (renderer->use_color) {
+        lb_puts(lb, S("\x1B[m"));
+    }
+
+    lb_puts(lb, S(VLINE));
+}
+
+void print_bracketed_span(Renderer *renderer, const char *left, size_t left_len,
+    const char *mid, size_t mid_len, const char *right, size_t right_len
+) {
+    lb_puts(renderer->lb, left, left_len);
+    lb_reps(renderer->lb, mid, mid_len, renderer->card_width - 2);
+    lb_puts(renderer->lb, right, right_len);
+}
+
+void render_card_back(Renderer *renderer) {
+    print_bracketed_span(renderer, S(VLINE), S(CARDBACK), S(VLINE));
+}
+
+void render_card_top(Renderer *renderer) {
+    print_bracketed_span(renderer, S(CORNER_TL), S(HLINE), S(CORNER_TR));
+}
+
+void render_card_bottom(Renderer *renderer) {
+    print_bracketed_span(renderer, S(CORNER_BL), S(HLINE), S(CORNER_BR));
+}
+
+void render_depot_top(Renderer *renderer) {
+    print_bracketed_span(renderer, S(CORNER_TL), S("\x20"), S(CORNER_TR));
+}
+
+void render_depot_bottom(Renderer *renderer) {
+    print_bracketed_span(renderer, S(CORNER_BL), S("\x20"), S(CORNER_BR));
+}
+
+void render_small_card(Renderer *renderer, Card card, sbyte scanline) {
     if (is_valid_card(card)) {
         if (is_face_up(card)) {
-            lb_puts(lb, S(VLINE));
-            if (renderer->use_color) {
-                const char *suit_color = SUIT_COLORS[get_suit(card)];
-                lb_puts(lb, S("\x1B["));
-                lb_puts(lb, suit_color, strlen(suit_color));
-                lb_puts(lb, S(";47m"));
-            }
-            print_sigil(lb, card, -(renderer->card_width - 2));
-            if (renderer->use_color) {
-                lb_puts(lb, S("\x1B[m"));
-            }
-            lb_puts(lb, S(VLINE));
+            render_card_sigil(renderer, card, JUSTIFY_LEFT);
         } else {
-            lb_puts(lb, S(VLINE));
-            lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
-            lb_puts(lb, S(VLINE));
+            render_card_back(renderer);
         }
     } else {
-        lb_puts(lb, S(VLINE));
-        lb_repc(lb, '_', renderer->card_width - 2);
-        lb_puts(lb, S(VLINE));
+        print_bracketed_span(renderer, S(VLINE), S("_"), S(VLINE));
     }
 }
 
@@ -197,47 +252,30 @@ void init_small_card_renderer(Renderer *renderer) {
 }
 
 void render_normal_card(Renderer *renderer, Card card, sbyte scanline) {
-    LineBuffer *lb = renderer->lb;
-
     if (scanline == 0) {
-        lb_puts(lb, S(CORNER_TL));
         if (is_valid_card(card)) {
-            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+            render_card_top(renderer);
         } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
+            render_depot_top(renderer);
         }
-        lb_puts(lb, S(CORNER_TR));
     } else if (scanline == renderer->card_height - 1) {
-        lb_puts(lb, S(CORNER_BL));
         if (is_valid_card(card)) {
-            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+            render_card_bottom(renderer);
         } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
+            render_depot_bottom(renderer);
         }
-        lb_puts(lb, S(CORNER_BR));
     } else if (is_valid_card(card) && is_face_up(card)) {
-        lb_puts(lb, S(VLINE));
-        if (renderer->use_color) {
-            const char *suit_color = SUIT_COLORS[get_suit(card)];
-            lb_puts(lb, S("\x1B["));
-            lb_puts(lb, suit_color, strlen(suit_color));
-            lb_puts(lb, S(";47m"));
-        }
         if (scanline == 1) {
-            print_sigil(lb, card, -(renderer->card_width - 2));
+            render_card_sigil(renderer, card, JUSTIFY_LEFT);
+        } else if (scanline == renderer->card_height - 2 && renderer->show_bottom_sigil) {
+            render_card_sigil(renderer, card, JUSTIFY_RIGHT);
         } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
+            render_card_blank_face(renderer);
         }
-        if (renderer->use_color) {
-            lb_puts(lb, S("\x1b[m"));
-        }
-        lb_puts(lb, S(VLINE));
     } else if (is_valid_card(card)) {
-        lb_puts(lb, S(VLINE));
-        lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
-        lb_puts(lb, S(VLINE));
+        render_card_back(renderer);
     } else {
-        lb_repc(lb, '\x20', renderer->card_width);
+        lb_repc(renderer->lb, '\x20', renderer->card_width);
     }
 }
 
@@ -246,54 +284,8 @@ void init_normal_card_renderer(Renderer *renderer) {
     renderer->card_height = 4;
     renderer->card_peeking = 2;
     renderer->gap_height = 1;
+    renderer->show_bottom_sigil = false;
     renderer->render_card = render_normal_card;
-}
-
-void render_large_card(Renderer *renderer, Card card, sbyte scanline) {
-    LineBuffer *lb = renderer->lb;
-
-    if (scanline == 0) {
-        lb_puts(lb, S(CORNER_TL));
-        if (is_valid_card(card)) {
-            lb_reps(lb, S(HLINE), renderer->card_width - 2);
-        } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
-        }
-        lb_puts(lb, S(CORNER_TR));
-    } else if (scanline == renderer->card_height - 1) {
-        lb_puts(lb, S(CORNER_BL));
-        if (is_valid_card(card)) {
-            lb_reps(lb, S(HLINE), renderer->card_width - 2);
-        } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
-        }
-        lb_puts(lb, S(CORNER_BR));
-    } else if (is_valid_card(card) && is_face_up(card)) {
-        lb_puts(lb, S(VLINE));
-        if (renderer->use_color) {
-            const char *suit_color = SUIT_COLORS[get_suit(card)];
-            lb_puts(lb, S("\x1B["));
-            lb_puts(lb, suit_color, strlen(suit_color));
-            lb_puts(lb, S(";47m"));
-        }
-        if (scanline == 1) {
-            print_sigil(lb, card, -(renderer->card_width - 2));
-        } else if (scanline == renderer->card_height - 2) {
-            print_sigil(lb, card, renderer->card_width - 2);
-        } else {
-            lb_repc(lb, '\x20', renderer->card_width - 2);
-        }
-        if (renderer->use_color) {
-            lb_puts(lb, S("\x1b[m"));
-        }
-        lb_puts(lb, S(VLINE));
-    } else if (is_valid_card(card)) {
-        lb_puts(lb, S(VLINE));
-        lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
-        lb_puts(lb, S(VLINE));
-    } else {
-        lb_repc(lb, '\x20', renderer->card_width);
-    }
 }
 
 void init_large_card_renderer(Renderer *renderer) {
@@ -301,7 +293,8 @@ void init_large_card_renderer(Renderer *renderer) {
     renderer->card_height = 6;
     renderer->card_peeking = 2;
     renderer->gap_height = 2;
-    renderer->render_card = render_large_card;
+    renderer->show_bottom_sigil = true;
+    renderer->render_card = render_normal_card;
 }
 
 typedef struct Depot {

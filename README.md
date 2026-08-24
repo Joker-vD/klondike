@@ -18,7 +18,7 @@ The game recognizes the [`NO_COLOR` environment variable](https://no-color.org/)
 
 The `--deck` option takes a string representation of an ordered deck to use instead of a random shuffle (e.g. `--deck AS10DKH...`).
 
-The visual size of the cards can be changed by supplying either a `--small` (5x1 cards) or a `--normal` (5x4 cards) option. By default, the `--normal` option is used.
+The visual size of the cards can be changed by supplying either `--small` (5x1 cards), `--normal` (5x4 cards), or `--large` (7x6 cards) option. By default, the `--normal` option is used.
 
 ## Gameplay
 
