@@ -11,7 +11,8 @@ typedef struct LineBufferStorage {
 
 void lb_init_from_fd(LineBuffer *lb, int fd);
 
-bool lb_isatty(LineBuffer *lb);
+int lb_fileno(const LineBuffer *lb);
+bool lb_isatty(const LineBuffer *lb);
 
 void lb_flush(LineBuffer *lb);
 
@@ -25,6 +26,7 @@ void lb_pad_left(LineBuffer *lb, int field_width, int padding);
 // If padding is negative, prints max(0, abs(padding) - field_width) spaces
 void lb_pad_right(LineBuffer *lb, int field_width, int padding);
 
+int lb_getc(LineBuffer *lb);
 // Reads bytes from the input and writes them into the buffer, until either buffer_size bytes are written,
 // or LF is written, or EOF/error is encountered. Returns the number of bytes written or, if 0 would be
 // returned because of encountering EOF/error early, returns -1 instead.

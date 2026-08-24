@@ -3,16 +3,9 @@
 #include <stdlib.h>
 #include <time.h>
 
+#include "basics.h"
 #include "lbio.h"
-
-#define COUNTOF(arr)    (sizeof(arr) / sizeof(*(arr)))
-#define LENOF(str)      (COUNTOF(str) - 1)
-#define S(str)          (str), LENOF(str)
-
-#define FOREACH(type, var, arr) for (type var = (arr); var < &(arr)[COUNTOF(arr)]; var++)
-
-typedef unsigned char byte;
-typedef signed char sbyte;
+#include "tty.h"
 
 typedef enum Suit : byte { SPADES, CLUBS, HEARTS, DIAMONDS } Suit;
 
@@ -133,6 +126,10 @@ void print_sigil(LineBuffer *lb, Card card, int padding) {
     }
 }
 
+typedef enum Personality : byte {
+    ED_MODE, VI_MODE,
+} Personality;
+
 typedef struct Renderer {
     LineBuffer *lb;
     bool use_color;
@@ -143,7 +140,22 @@ typedef struct Renderer {
     sbyte gap_height;
     sbyte show_bottom_sigil;
     void (*render_card)(struct Renderer *renderer, Card card, sbyte scanline);
+
+    Personality personality;
+    TtyCookie original_tty_cookie;
 } Renderer;
+
+void start_renderer(Renderer *renderer) {
+    if (renderer->personality == VI_MODE) {
+        enter_visual_mode(renderer->lb, &renderer->original_tty_cookie);
+    }
+}
+
+void stop_renderer(const Renderer *renderer) {
+    if (renderer->personality == VI_MODE) {
+        leave_visual_mode(renderer->lb, &renderer->original_tty_cookie);
+    }
+}
 
 const char * const SUIT_COLORS[] = {
     [SPADES]    = "30",
@@ -614,6 +626,10 @@ bool try_up_card(Klondike *game, Card card) {
 void render_game_state(Renderer *renderer, const Klondike *game) {
     LineBuffer *output = renderer->lb;
 
+    if (renderer->personality == VI_MODE) {
+        lb_puts(output, S("\x1B[H"));
+    }
+
     for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
         renderer->render_card(renderer, top_card(&game->stock), scanline);
         lb_putc(output, '\x20');
@@ -672,6 +688,11 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
         }
 
         lb_putc(output, '\n');
+    }
+
+    if (renderer->personality == VI_MODE) {
+        lb_puts(output, S("\x1B[J"));
+        lb_flush(output);
     }
 }
 
@@ -976,6 +997,32 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
     } while(true);
 }
 
+char *do_visual_selection(LineBuffer *input, LineBuffer *output) {
+    while (true) {
+        switch (lb_getc(input)) {
+        case -1:
+            return NULL;
+        case ':':
+            TtyCookie visual_mode_cookie;
+            enter_cooked_mode(output, &visual_mode_cookie);
+            char *raw = read_command_line(input, output);
+            leave_cooked_mode(output, &visual_mode_cookie);
+            return raw;
+        }
+    }
+}
+
+char *get_raw_cmd(LineBuffer *input, LineBuffer *output, Personality personality) {
+    switch (personality) {
+    case ED_MODE:
+        return read_command_line(input, output);
+    case VI_MODE:
+        return do_visual_selection(input, output);
+    }
+
+    return NULL;
+}
+
 void start_game(Klondike *game, const Card deck[static 52]) {
     init_depot(&game->stock, STOCK);
     init_depot(&game->waste, WASTE);
@@ -1016,7 +1063,7 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
         }
 
         for (bool command_succeeded = false; !command_succeeded; ) {
-            const char *raw = read_command_line(input, output);
+            const char *raw = get_raw_cmd(input, output, renderer->personality);
 
             if (raw == NULL) {
                 return GAME_QUIT;
@@ -1061,6 +1108,7 @@ typedef struct Config {
     bool use_color;
     bool explicit_deck;
     CardSize card_size;
+    Personality personality;
 } Config;
 
 typedef struct ConfigContext {
@@ -1080,6 +1128,7 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
 
         config->explicit_deck = false;
         config->card_size = CARD_SIZE_NORMAL;
+        config->personality = ED_MODE;
     }
 
     for (int argi = 1; argi < ctx->argc; argi++) {
@@ -1100,6 +1149,13 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
 
         if (strcmp(ctx->argv[argi], "--large") == 0) {
             config->card_size = CARD_SIZE_LARGE;
+            continue;
+        }
+
+        if (strcmp(ctx->argv[argi], "--vi-mode") == 0) {
+            if (lb_isatty(ctx->stdin) && lb_isatty(ctx->stdout)) {
+                config->personality = VI_MODE;
+            }
             continue;
         }
 
@@ -1154,7 +1210,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    Renderer renderer = { .lb = &stdout, .use_color = config.use_color, 0 };
+    Renderer renderer = { 0 };
+    renderer.lb = &stdout;
+    renderer.use_color = config.use_color;
+    renderer.personality = config.personality;
+
     switch (config.card_size) {
     case CARD_SIZE_SMALL:
         init_small_card_renderer(&renderer);
@@ -1166,6 +1226,8 @@ int main(int argc, char **argv) {
         init_large_card_renderer(&renderer);
     }
 
+    start_renderer(&renderer);
+
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
         if (lb_isatty(&stdout)) {
             lb_putc(&stdout, '\a');
@@ -1173,5 +1235,6 @@ int main(int argc, char **argv) {
         lb_puts(&stdout, S("You won!\n"));
     }
 
+    stop_renderer(&renderer);
     return 0;
 }

@@ -14,7 +14,7 @@ typedef struct LineBufferImpl {
 } LineBufferImpl;
 
 static_assert(sizeof(LineBufferImpl) == sizeof(LineBuffer), "LineBuffer has wrong size");
-static_assert(_Alignof(LineBufferImpl) <= _Alignof(LineBuffer), "LineBuffer has wrong alignment");
+static_assert(alignof(LineBufferImpl) <= alignof(LineBuffer), "LineBuffer has wrong alignment");
 
 // This is probably still UB but I just can't bring myself to memcpy-ing structs to and fro.
 typedef union LineBufferUnion {
@@ -31,8 +31,13 @@ void lb_init_from_fd(LineBuffer *blob, int fd) {
     lb->offset = lb->end = 0;
 }
 
-bool lb_isatty(LineBuffer *blob) {
-    RECAST;
+int lb_fileno(const LineBuffer *blob) {
+    const RECAST;
+    return lb->fd;
+}
+
+bool lb_isatty(const LineBuffer *blob) {
+    const RECAST;
     return lb->isatty;
 }
 
@@ -125,6 +130,18 @@ bool lb_fill_rdbuf(LineBuffer *blob) {
         lb->end = count;
         return true;
     }
+}
+
+int lb_getc(LineBuffer *blob) {
+    RECAST;
+
+    if (lb->offset == lb->end) {
+        if (!lb_fill_rdbuf(blob)) {
+            return -1;
+        }
+    }
+
+    return (unsigned char)lb->buffer[lb->offset++];
 }
 
 int lb_gets(LineBuffer *blob, char *buffer, int buffer_size) {
