@@ -21,6 +21,7 @@ ERRORS=
 
 if ! do_test 'small cards' --small ; then ERRORS="${ERRORS}x" ; fi
 if ! do_test 'normal cards' --normal ; then ERRORS="${ERRORS}x" ; fi
+if ! do_test 'large cards' --large ; then  ERRORS="${ERRORS}x" ; fi
 
 if [ -n "$ERRORS" ]
 then
