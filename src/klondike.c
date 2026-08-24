@@ -249,6 +249,61 @@ void init_normal_card_renderer(Renderer *renderer) {
     renderer->render_card = render_normal_card;
 }
 
+void render_large_card(Renderer *renderer, Card card, sbyte scanline) {
+    LineBuffer *lb = renderer->lb;
+
+    if (scanline == 0) {
+        lb_puts(lb, S(CORNER_TL));
+        if (is_valid_card(card)) {
+            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        lb_puts(lb, S(CORNER_TR));
+    } else if (scanline == renderer->card_height - 1) {
+        lb_puts(lb, S(CORNER_BL));
+        if (is_valid_card(card)) {
+            lb_reps(lb, S(HLINE), renderer->card_width - 2);
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        lb_puts(lb, S(CORNER_BR));
+    } else if (is_valid_card(card) && is_face_up(card)) {
+        lb_puts(lb, S(VLINE));
+        if (renderer->use_color) {
+            const char *suit_color = SUIT_COLORS[get_suit(card)];
+            lb_puts(lb, S("\x1B["));
+            lb_puts(lb, suit_color, strlen(suit_color));
+            lb_puts(lb, S(";47m"));
+        }
+        if (scanline == 1) {
+            print_sigil(lb, card, -(renderer->card_width - 2));
+        } else if (scanline == renderer->card_height - 2) {
+            print_sigil(lb, card, renderer->card_width - 2);
+        } else {
+            lb_repc(lb, '\x20', renderer->card_width - 2);
+        }
+        if (renderer->use_color) {
+            lb_puts(lb, S("\x1b[m"));
+        }
+        lb_puts(lb, S(VLINE));
+    } else if (is_valid_card(card)) {
+        lb_puts(lb, S(VLINE));
+        lb_reps(lb, S(CARDBACK), renderer->card_width - 2);
+        lb_puts(lb, S(VLINE));
+    } else {
+        lb_repc(lb, '\x20', renderer->card_width);
+    }
+}
+
+void init_large_card_renderer(Renderer *renderer) {
+    renderer->card_width = 7;
+    renderer->card_height = 6;
+    renderer->card_peeking = 2;
+    renderer->gap_height = 2;
+    renderer->render_card = render_large_card;
+}
+
 typedef struct Depot {
     Place place;
     byte len;
@@ -854,6 +909,16 @@ bool parse_cmd(const char *raw, Cmd *cmd) {
     return false;
 }
 
+// DECK  ::=  CARD{52}
+bool parse_deck(const char *raw, Card deck[static 52]) {
+    for (Card *card = &deck[0]; card < &deck[52]; card++) {
+        raw = parse_card(raw, card);
+        if (raw == NULL) { return false; }
+    }
+
+    return is_valid_deck(deck);
+}
+
 // After reading a line that fits into the buffer, returns the number of bytes read.
 // After reading an overly long line, skips it and returns 0. On read error, returns -1.
 int get_short_line(LineBuffer *input, char *buffer, int buffer_size) {
@@ -996,7 +1061,7 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
 }
 
 typedef enum CardSize : byte {
-    CARD_SIZE_SMALL, CARD_SIZE_NORMAL,
+    CARD_SIZE_SMALL, CARD_SIZE_NORMAL, CARD_SIZE_LARGE,
 } CardSize;
 
 typedef struct Config {
@@ -1040,6 +1105,11 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
             continue;
         }
 
+        if (strcmp(ctx->argv[argi], "--large") == 0) {
+            config->card_size = CARD_SIZE_LARGE;
+            continue;
+        }
+
         if (strcmp(ctx->argv[argi], "--deck") == 0) {
             if (argi == ctx->argc - 1) {
                 lb_puts(ctx->stderr, S("missing value for --deck option\n"));
@@ -1047,14 +1117,7 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
             }
             const char *deck_string = ctx->argv[++argi];
 
-            for (Card *card = &deck[0]; card < &deck[52]; card++) {
-                deck_string = parse_card(deck_string, card);
-                if (deck_string == NULL) {
-                    lb_puts(ctx->stderr, S("invalid value for --deck option\n"));
-                    return false;
-                }
-            }
-            if (deck_string[0] != 0 || !is_valid_deck(deck)) {
+            if (!parse_deck(deck_string, deck)) {
                 lb_puts(ctx->stderr, S("invalid value for --deck option\n"));
                 return false;
             }
@@ -1106,6 +1169,8 @@ int main(int argc, char **argv) {
     case CARD_SIZE_NORMAL:
         init_normal_card_renderer(&renderer);
         break;
+    case CARD_SIZE_LARGE:
+        init_large_card_renderer(&renderer);
     }
 
     if (play_game(&stdin, &renderer, &game, deck) == GAME_WON) {
