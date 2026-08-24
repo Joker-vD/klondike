@@ -6,13 +6,15 @@
 #include <stddef.h>
 
 typedef struct LineBufferStorage {
-    alignas(int) unsigned char blob[268];
+    alignas(int) unsigned char blob[270];
 } LineBuffer;
 
 void lb_init_from_fd(LineBuffer *lb, int fd);
 
 int lb_fileno(const LineBuffer *lb);
 bool lb_isatty(const LineBuffer *lb);
+unsigned short lb_lines(const LineBuffer *lb);
+unsigned short lb_cols(const LineBuffer *lb);
 
 void lb_flush(LineBuffer *lb);
 

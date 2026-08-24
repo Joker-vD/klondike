@@ -1,4 +1,5 @@
 #include "lbio.h"
+#include "tty.h"
 
 #include <assert.h>
 #include <string.h>
@@ -8,6 +9,7 @@
 typedef struct LineBufferImpl {
     int fd;
     bool isatty;
+    TtySize tty_size;
     short offset;
     short end;
     char buffer[256];
@@ -28,6 +30,9 @@ void lb_init_from_fd(LineBuffer *blob, int fd) {
     RECAST;
     lb->fd = fd;
     lb->isatty = isatty(fd);
+    if (!lb->isatty || !get_tty_size(fd, &lb->tty_size)) {
+        lb->tty_size.lines = lb->tty_size.cols = 0;
+    }
     lb->offset = lb->end = 0;
 }
 
@@ -39,6 +44,16 @@ int lb_fileno(const LineBuffer *blob) {
 bool lb_isatty(const LineBuffer *blob) {
     const RECAST;
     return lb->isatty;
+}
+
+unsigned short lb_lines(const LineBuffer *blob) {
+    const RECAST;
+    return lb->tty_size.lines;
+}
+
+unsigned short lb_cols(const LineBuffer *blob) {
+    const RECAST;
+    return lb->tty_size.cols;
 }
 
 void lb_flush(LineBuffer *blob) {

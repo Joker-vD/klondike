@@ -1,6 +1,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <time.h>
 
 #include "basics.h"
@@ -623,11 +624,67 @@ bool try_up_card(Klondike *game, Card card) {
     return true;
 }
 
+// If the line to render is fully empty, does nothing and return false. Otherwise renders the line
+// without emitting LF and returns true.
+bool render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned short screen_line) {
+    LineBuffer *output = renderer->lb;
+
+    // Several overlapping cards can occupy the same screen line, but only the top-most one
+    // needs to be drawn. This probably can be calculated once, in the renderer, and without
+    // any divisions but eh
+    short min_card_index = (screen_line - (renderer->card_height - renderer->card_peeking)) / renderer->card_peeking;
+    if (min_card_index < 0) { min_card_index = 0; }
+    short max_card_index = screen_line / renderer->card_peeking;
+    int max_depot_len = COUNTOF(((Depot*)(NULL))->cards);
+    if (max_card_index >= max_depot_len) {
+        max_card_index = max_depot_len - 1;
+    }
+
+    int empty_piles = 0;
+    FOREACH (const Depot *, pile, *piles) {
+        if (min_card_index != 0 && min_card_index >= pile->len) {
+            empty_piles++;
+        }
+    }
+    if (empty_piles == COUNTOF(*piles)) {
+        return false;
+    }
+
+    FOREACH (const Depot *, pile, *piles) {
+        if (pile != *piles) { lb_putc(output, '\x20'); }
+
+        sbyte card_index = max_card_index;
+        if (card_index >= pile->len) { card_index = pile->len - 1; }
+        if (card_index < min_card_index) { card_index = min_card_index; }
+        sbyte scanline = screen_line - card_index * renderer->card_peeking;
+
+        if (card_index >= pile->len) {
+            if (card_index == 0) {
+                renderer->render_card(renderer, NO_CARD, scanline);
+            } else {
+                lb_repc(output, '\x20', renderer->card_width);
+            }
+        } else {
+            renderer->render_card(renderer, pile->cards[card_index], scanline);
+        }
+    }
+
+    return true;
+}
+
 void render_game_state(Renderer *renderer, const Klondike *game) {
     LineBuffer *output = renderer->lb;
 
+    unsigned short screen_height = USHRT_MAX;
+
     if (renderer->personality == VI_MODE) {
         lb_puts(output, S("\x1B[H"));
+
+        screen_height = lb_lines(output);
+        if (renderer->card_height + renderer->gap_height + renderer->card_peeking > screen_height) {
+            lb_puts(output, S("ETINY\n"));
+            return;
+        }
     }
 
     for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
@@ -643,55 +700,29 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
     }
 
     for (sbyte i = 0; i < renderer->gap_height; i++) {
+        lb_repc(output, '\x20', 7 * renderer->card_width + 6);
         lb_putc(output, '\n');
     }
 
-    // Several overlapping cards can occupy the same screen line, but only the top-most one
-    // needs to be drawn
-    for (short screen_line = 0; screen_line < 100; screen_line++) {
-        // Can probably calculated once, in the renderer, and without any divisions but eh
-        short min_card_index = (screen_line - (renderer->card_height - renderer->card_peeking)) / renderer->card_peeking;
-        if (min_card_index < 0) { min_card_index = 0; }
-        short max_card_index = screen_line / renderer->card_peeking;
-        int max_depot_len = COUNTOF(((Depot*)(NULL))->cards);
-        if (max_card_index >= max_depot_len) {
-            max_card_index = max_depot_len - 1;
-        }
+    screen_height -= (renderer->card_height + renderer->gap_height);
 
-        int empty_piles = 0;
-        FOREACH (const Depot *, pile, game->piles) {
-            if (min_card_index != 0 && min_card_index >= pile->len) {
-                empty_piles++;
-            }
-        }
-        if (empty_piles == COUNTOF(game->piles)) {
+    unsigned short screen_line = 0;
+    for (; screen_line < screen_height; screen_line++) {
+        if (!render_pile_line(renderer, &game->piles, screen_line)) {
             break;
         }
 
-        FOREACH (const Depot *, pile, game->piles) {
-            if (pile != game->piles) { lb_putc(output, '\x20'); }
-
-            sbyte card_index = max_card_index;
-            if (card_index >= pile->len) { card_index = pile->len - 1; }
-            if (card_index < min_card_index) { card_index = min_card_index; }
-            sbyte scanline = screen_line - card_index * renderer->card_peeking;
-
-            if (card_index >= pile->len) {
-                if (card_index == 0) {
-                    renderer->render_card(renderer, NO_CARD, scanline);
-                } else {
-                    lb_repc(output, '\x20', renderer->card_width);
-                }
-            } else {
-                renderer->render_card(renderer, pile->cards[card_index], scanline);
-            }
+        // If in vi mode, do not scroll past the last line on the screen
+        if (renderer->personality != VI_MODE || screen_line != screen_height - 1) {
+            lb_putc(output, '\n');
         }
-
-        lb_putc(output, '\n');
     }
 
     if (renderer->personality == VI_MODE) {
         lb_puts(output, S("\x1B[J"));
+        if (screen_line == screen_height) {
+            lb_putc(output, '\r');
+        }
         lb_flush(output);
     }
 }
@@ -1003,10 +1034,9 @@ char *do_visual_selection(LineBuffer *input, LineBuffer *output) {
         case -1:
             return NULL;
         case ':':
-            TtyCookie visual_mode_cookie;
-            enter_cooked_mode(output, &visual_mode_cookie);
+            drop_into_cooked_mode(output);
             char *raw = read_command_line(input, output);
-            leave_cooked_mode(output, &visual_mode_cookie);
+            drop_out_of_cooked_mode(output);
             return raw;
         }
     }
