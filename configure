@@ -1,0 +1,29 @@
+#!/bin/bash -e
+
+trap 'rm -f obj/configure obj/configure.c' EXIT
+
+cat >obj/configure.c <<'EOF'
+#include <stdio.h>
+#include <stdalign.h>
+#include <termios.h>
+
+int main(int argc, char **argv) {
+    puts("#ifndef CONFIG_H_");
+    puts("#define CONFIG_H_");
+    puts("");
+
+    printf("#define TTY_COOKIE_SIZE %zu\n", sizeof(struct termios));
+    printf("#define TTY_COOKIE_ALIGNMENT %zu\n", alignof(struct termios));
+
+    puts("");
+    puts("#endif // CONFIG_H_");
+}
+EOF
+
+gcc -o obj/configure obj/configure.c
+
+if ! obj/configure >src/config.h
+then
+    rm src/config.h
+    exit 1
+fi
