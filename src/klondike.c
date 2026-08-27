@@ -131,6 +131,10 @@ typedef enum Personality : byte {
     ED_MODE, VI_MODE,
 } Personality;
 
+typedef enum Style : byte {
+    STYLE_NORMAL, STYLE_MOVING, STYLE_FIXED,
+} Style;
+
 typedef struct Renderer {
     LineBuffer *lb;
     bool use_color;
@@ -140,7 +144,13 @@ typedef struct Renderer {
     sbyte card_peeking;
     sbyte gap_height;
     sbyte show_bottom_sigil;
-    void (*render_card)(struct Renderer *renderer, Card card, sbyte scanline);
+
+    enum {
+        HIGHLIGHTED = 1 << 0,
+        COLORED     = 1 << 1,
+    } styling_state;
+
+    void (*render_card)(struct Renderer *renderer, Card card, Style style, sbyte scanline);
 
     Personality personality;
     TtyCookie original_tty_cookie;
@@ -158,12 +168,58 @@ void stop_renderer(const Renderer *renderer) {
     }
 }
 
+void render_open_higlight(Renderer *renderer) {
+    if (renderer->styling_state & HIGHLIGHTED) {
+        return;
+    }
+
+    lb_puts(renderer->lb, S("\x1B[7m"));
+    renderer->styling_state |= HIGHLIGHTED;
+}
+
+void render_close_higlight(Renderer *renderer) {
+    if (renderer->styling_state & HIGHLIGHTED) {
+        if (renderer->styling_state & COLORED) {
+            lb_puts(renderer->lb, S("\x1B[27m"));
+        } else {
+            lb_puts(renderer->lb, S("\x1B[m"));
+        }
+        renderer->styling_state &= ~HIGHLIGHTED;
+    }
+}
+
+void render_open_colors(Renderer *renderer, const char *color1, size_t color1_len,
+    const char *color2, size_t color2_len
+) {
+    if (renderer->use_color) {
+        lb_puts(renderer->lb, S("\x1B["));
+        lb_puts(renderer->lb, color1, color1_len);
+        lb_putc(renderer->lb, ';');
+        lb_puts(renderer->lb, color2, color2_len);
+        lb_putc(renderer->lb, 'm');
+        renderer->styling_state |= COLORED;
+    }
+}
+
+void render_close_colors(Renderer *renderer) {
+    if (renderer->styling_state & COLORED) {
+        if (renderer->styling_state & HIGHLIGHTED) {
+            lb_puts(renderer->lb, S("\x1B[;7m"));
+        } else {
+            lb_puts(renderer->lb, S("\x1B[m"));
+        }
+        renderer->styling_state &= ~COLORED;
+    }
+}
+
 const char * const SUIT_COLORS[] = {
     [SPADES]    = "30",
     [CLUBS]     = "34",
     [HEARTS]    = "31",
     [DIAMONDS]  = "2;33",
 };
+
+const char FACE_COLOR[] = "47";
 
 const char CARDBACK[]   = "\xE2\x96\x92";
 const char HLINE[]      = "\xE2\x94\x80";
@@ -177,43 +233,80 @@ typedef enum JustifyKind : sbyte {
     JUSTIFY_LEFT = -1, JUSTIFY_RIGHT = 1,
 } JustifyKind;
 
-void render_card_sigil(Renderer *renderer, Card card, JustifyKind justify) {
+void print_left_vignette(Renderer *renderer, Style style, const char *normal, size_t normal_len) {
     LineBuffer *lb = renderer->lb;
 
-    lb_puts(lb, S(VLINE));
-
-    if (renderer->use_color) {
-        const char *suit_color = SUIT_COLORS[get_suit(card)];
-        lb_puts(lb, S("\x1B["));
-        lb_puts(lb, suit_color, strlen(suit_color));
-        lb_puts(lb, S(";47m"));
+    switch (style) {
+    case STYLE_NORMAL:
+        lb_puts(lb, normal, normal_len);
+        break;
+    case STYLE_MOVING:
+        lb_putc(lb, '>');
+        break;
+    case STYLE_FIXED:
+        lb_putc(lb, '&');
+        break;
     }
-
-    print_sigil(lb, card, justify * (renderer->card_width - 2));
-
-    if (renderer->use_color) {
-        lb_puts(lb, S("\x1B[m"));
-    }
-
-    lb_puts(lb, S(VLINE));
 }
 
-void render_card_blank_face(Renderer *renderer) {
+void print_right_vignette(Renderer *renderer, Style style, const char *normal, size_t normal_len) {
     LineBuffer *lb = renderer->lb;
 
-    lb_puts(lb, S(VLINE));
-
-    if (renderer->use_color) {
-        lb_puts(lb, S("\x1B[47m"));
+    switch (style) {
+    case STYLE_NORMAL:
+        lb_puts(lb, normal, normal_len);
+        break;
+    case STYLE_MOVING:
+        lb_putc(lb, '<');
+        break;
+    case STYLE_FIXED:
+        lb_putc(lb, '&');
+        break;
     }
+}
 
+void render_card_sigil(Renderer *renderer, Card card, JustifyKind justify, Style style) {
+    LineBuffer *lb = renderer->lb;
+
+    print_left_vignette(renderer, style, S(VLINE));
+
+    const char *suit_color = SUIT_COLORS[get_suit(card)];
+    render_open_colors(renderer, suit_color, strlen(suit_color), S(FACE_COLOR));
+    print_sigil(lb, card, justify * (renderer->card_width - 2));
+    render_close_colors(renderer);
+
+    print_right_vignette(renderer, style, S(VLINE));
+}
+
+void render_card_blank_face(Renderer *renderer, Card card, Style style) {
+    LineBuffer *lb = renderer->lb;
+
+    print_left_vignette(renderer, style, S(VLINE));
+
+    const char *suit_color = SUIT_COLORS[get_suit(card)];
+    render_open_colors(renderer, suit_color, strlen(suit_color), S(FACE_COLOR));
     lb_repc(lb, '\x20', renderer->card_width - 2);
+    render_close_colors(renderer);
 
-    if (renderer->use_color) {
-        lb_puts(lb, S("\x1B[m"));
-    }
+    print_right_vignette(renderer, style, S(VLINE));
+}
 
-    lb_puts(lb, S(VLINE));
+void render_card_back(Renderer *renderer, Style style) {
+    print_left_vignette(renderer, style, S(VLINE));
+    lb_reps(renderer->lb, S(CARDBACK), renderer->card_width - 2);
+    print_right_vignette(renderer, style, S(VLINE));
+}
+
+void render_small_depot(Renderer *renderer, Style style) {
+    print_left_vignette(renderer, style, S("|"));
+    lb_repc(renderer->lb, '_', renderer->card_width - 2);
+    print_right_vignette(renderer, style, S("|"));
+}
+
+void render_normal_depot(Renderer *renderer, Style style) {
+    print_left_vignette(renderer, style, S("\x20"));
+    lb_repc(renderer->lb, '\x20', renderer->card_width - 2);
+    print_right_vignette(renderer, style, S("\x20"));
 }
 
 void print_bracketed_span(Renderer *renderer, const char *left, size_t left_len,
@@ -222,10 +315,6 @@ void print_bracketed_span(Renderer *renderer, const char *left, size_t left_len,
     lb_puts(renderer->lb, left, left_len);
     lb_reps(renderer->lb, mid, mid_len, renderer->card_width - 2);
     lb_puts(renderer->lb, right, right_len);
-}
-
-void render_card_back(Renderer *renderer) {
-    print_bracketed_span(renderer, S(VLINE), S(CARDBACK), S(VLINE));
 }
 
 void render_card_top(Renderer *renderer) {
@@ -244,15 +333,24 @@ void render_depot_bottom(Renderer *renderer) {
     print_bracketed_span(renderer, S(CORNER_BL), S("\x20"), S(CORNER_BR));
 }
 
-void render_small_card(Renderer *renderer, Card card, sbyte scanline) {
+void render_small_card(Renderer *renderer, Card card, Style style, sbyte scanline) {
+    renderer->styling_state = 0;
+    if (style != STYLE_NORMAL) {
+        render_open_higlight(renderer);
+    }
+
     if (is_valid_card(card)) {
         if (is_face_up(card)) {
-            render_card_sigil(renderer, card, JUSTIFY_LEFT);
+            render_card_sigil(renderer, card, JUSTIFY_LEFT, style);
         } else {
-            render_card_back(renderer);
+            render_card_back(renderer, style);
         }
     } else {
-        print_bracketed_span(renderer, S(VLINE), S("_"), S(VLINE));
+        render_small_depot(renderer, style);
+    }
+
+    if (style != STYLE_NORMAL) {
+        render_close_higlight(renderer);
     }
 }
 
@@ -264,7 +362,12 @@ void init_small_card_renderer(Renderer *renderer) {
     renderer->render_card = render_small_card;
 }
 
-void render_normal_card(Renderer *renderer, Card card, sbyte scanline) {
+void render_normal_card(Renderer *renderer, Card card, Style style, sbyte scanline) {
+    renderer->styling_state = 0;
+    if (style != STYLE_NORMAL) {
+        render_open_higlight(renderer);
+    }
+
     if (scanline == 0) {
         if (is_valid_card(card)) {
             render_card_top(renderer);
@@ -279,16 +382,28 @@ void render_normal_card(Renderer *renderer, Card card, sbyte scanline) {
         }
     } else if (is_valid_card(card) && is_face_up(card)) {
         if (scanline == 1) {
-            render_card_sigil(renderer, card, JUSTIFY_LEFT);
+            render_card_sigil(renderer, card, JUSTIFY_LEFT, style);
         } else if (scanline == renderer->card_height - 2 && renderer->show_bottom_sigil) {
-            render_card_sigil(renderer, card, JUSTIFY_RIGHT);
+            render_card_sigil(renderer, card, JUSTIFY_RIGHT, STYLE_NORMAL);
         } else {
-            render_card_blank_face(renderer);
+            render_card_blank_face(renderer, card, STYLE_NORMAL);
         }
     } else if (is_valid_card(card)) {
-        render_card_back(renderer);
+        if (scanline == 1) {
+            render_card_back(renderer, style);
+        } else {
+            render_card_back(renderer, STYLE_NORMAL);
+        }
     } else {
-        lb_repc(renderer->lb, '\x20', renderer->card_width);
+        if (scanline == 1) {
+            render_normal_depot(renderer, style);
+        } else {
+            render_normal_depot(renderer, STYLE_NORMAL);
+        }
+    }
+
+    if (style != STYLE_NORMAL) {
+        render_close_higlight(renderer);
     }
 }
 
@@ -660,12 +775,12 @@ bool render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
 
         if (card_index >= pile->len) {
             if (card_index == 0) {
-                renderer->render_card(renderer, NO_CARD, scanline);
+                renderer->render_card(renderer, NO_CARD, STYLE_NORMAL, scanline);
             } else {
                 lb_repc(output, '\x20', renderer->card_width);
             }
         } else {
-            renderer->render_card(renderer, pile->cards[card_index], scanline);
+            renderer->render_card(renderer, pile->cards[card_index], STYLE_NORMAL, scanline);
         }
     }
 
@@ -688,13 +803,13 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
     }
 
     for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
-        renderer->render_card(renderer, top_card(&game->stock), scanline);
+        renderer->render_card(renderer, top_card(&game->stock), STYLE_NORMAL, scanline);
         lb_putc(output, '\x20');
-        renderer->render_card(renderer, top_card(&game->waste), scanline);
+        renderer->render_card(renderer, top_card(&game->waste), STYLE_NORMAL, scanline);
         lb_repc(output, '\x20', renderer->card_width + 2);
         FOREACH (const Depot *, home, game->homes) {
             if (home != game->homes) { lb_putc(output, '\x20'); }
-            renderer->render_card(renderer, top_card(home), scanline);
+            renderer->render_card(renderer, top_card(home), STYLE_NORMAL, scanline);
         }
         lb_putc(output, '\n');
     }
