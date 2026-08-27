@@ -739,9 +739,26 @@ bool try_up_card(Klondike *game, Card card) {
     return true;
 }
 
-// If the line to render is fully empty, does nothing and return false. Otherwise renders the line
-// without emitting LF and returns true.
-bool render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned short screen_line) {
+unsigned short screen_lines_needed_for_pile(const Renderer *renderer, const Depot *pile) {
+    if (pile->len == 0) {
+        // An empty depot needs to be rendered.
+        return renderer->card_height;
+    }
+
+    return (pile->len - 1) * renderer->card_peeking + renderer->card_height;
+}
+
+unsigned short screen_lines_needed_for_piles(const Renderer *renderer, const Depot (*piles)[7]) {
+    unsigned short result = 0;
+    FOREACH (const Depot *, pile, *piles) {
+        unsigned short lines = screen_lines_needed_for_pile(renderer, pile);
+        if (lines > result) { result = lines; }
+    }
+    return result;
+}
+
+// If overlong != NUL, print it in places where non-spaces would be printed
+void render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned short screen_line, char overlong) {
     LineBuffer *output = renderer->lb;
 
     // Several overlapping cards can occupy the same screen line, but only the top-most one
@@ -755,16 +772,6 @@ bool render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
         max_card_index = max_depot_len - 1;
     }
 
-    int empty_piles = 0;
-    FOREACH (const Depot *, pile, *piles) {
-        if (min_card_index != 0 && min_card_index >= pile->len) {
-            empty_piles++;
-        }
-    }
-    if (empty_piles == COUNTOF(*piles)) {
-        return false;
-    }
-
     FOREACH (const Depot *, pile, *piles) {
         if (pile != *piles) { lb_putc(output, '\x20'); }
 
@@ -775,16 +782,22 @@ bool render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
 
         if (card_index >= pile->len) {
             if (card_index == 0) {
-                renderer->render_card(renderer, NO_CARD, STYLE_NORMAL, scanline);
+                if (overlong) {
+                    lb_repc(output, overlong, renderer->card_width);
+                } else {
+                    renderer->render_card(renderer, NO_CARD, STYLE_NORMAL, scanline);
+                }
             } else {
                 lb_repc(output, '\x20', renderer->card_width);
             }
         } else {
-            renderer->render_card(renderer, pile->cards[card_index], STYLE_NORMAL, scanline);
+            if (overlong) {
+                lb_repc(output, overlong, renderer->card_width);
+            } else {
+                renderer->render_card(renderer, pile->cards[card_index], STYLE_NORMAL, scanline);
+            }
         }
     }
-
-    return true;
 }
 
 void render_game_state(Renderer *renderer, const Klondike *game) {
@@ -796,7 +809,8 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
         lb_puts(output, S("\x1B[H"));
 
         screen_height = lb_lines(output);
-        if (renderer->card_height + renderer->gap_height + renderer->card_peeking > screen_height) {
+        // +1 to account for the very last line showing @@@'s instead of actual card faces.
+        if (renderer->card_height + renderer->gap_height + renderer->card_peeking + 1 > screen_height) {
             lb_puts(output, S("ETINY\n"));
             return;
         }
@@ -821,21 +835,26 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
 
     screen_height -= (renderer->card_height + renderer->gap_height);
 
-    unsigned short screen_line = 0;
-    for (; screen_line < screen_height; screen_line++) {
-        if (!render_pile_line(renderer, &game->piles, screen_line)) {
-            break;
+    unsigned short lines_needed = screen_lines_needed_for_piles(renderer, &game->piles);
+
+    if (renderer->personality == ED_MODE) {
+        for (unsigned short screen_line = 0; screen_line < lines_needed; screen_line++) {
+            render_pile_line(renderer, &game->piles, screen_line, 0);
+            lb_putc(output, '\n');
+        }
+    } else if (renderer->personality == VI_MODE) {
+        for (unsigned short screen_line = 0; screen_line < lines_needed && screen_line < screen_height - 1; screen_line++) {
+            render_pile_line(renderer, &game->piles, screen_line, 0);
+            lb_putc(output, '\n');
         }
 
         // If in vi mode, do not scroll past the last line on the screen
-        if (renderer->personality != VI_MODE || screen_line != screen_height - 1) {
-            lb_putc(output, '\n');
+        if (lines_needed >= screen_height) {
+            render_pile_line(renderer, &game->piles, screen_height - 1, '@');
         }
-    }
 
-    if (renderer->personality == VI_MODE) {
         lb_puts(output, S("\x1B[J"));
-        if (screen_line == screen_height) {
+        if (lines_needed >= screen_height) {
             lb_putc(output, '\r');
         }
         lb_flush(output);
