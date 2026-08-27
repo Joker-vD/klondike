@@ -752,7 +752,7 @@ unsigned short screen_lines_needed_for_piles(const Renderer *renderer, const Dep
     unsigned short result = 0;
     FOREACH (const Depot *, pile, *piles) {
         unsigned short lines = screen_lines_needed_for_pile(renderer, pile);
-        if (lines > result) { result = lines; }
+        if (result < lines) { result = lines; }
     }
     return result;
 }
@@ -800,7 +800,33 @@ void render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
     }
 }
 
-void render_game_state(Renderer *renderer, const Klondike *game) {
+typedef struct AdditionalVisuals {
+    sbyte card_window;     // index of the first visible card on the screen
+} AdditionalVisuals;
+
+typedef enum VisualDamage : bool {
+    RENDER_NOT_NEEDED, RENDER_NEEDED,
+} VisualDamage;
+
+VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *game, sbyte amount) {
+    sbyte new_window = extra->card_window + amount;
+
+    byte longest_pile_len = 0;
+    FOREACH (const Depot *, pile, game->piles) {
+        if (longest_pile_len < pile->len) { longest_pile_len = pile->len; }
+    }
+
+    if (new_window >= longest_pile_len) { new_window = longest_pile_len - 1; }
+    if (new_window < 0) { new_window = 0; }
+
+    if (new_window != extra->card_window) {
+        extra->card_window = new_window;
+        return RENDER_NEEDED;
+    }
+    return RENDER_NOT_NEEDED;
+}
+
+void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     LineBuffer *output = renderer->lb;
 
     unsigned short screen_height = USHRT_MAX;
@@ -809,8 +835,9 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
         lb_puts(output, S("\x1B[H"));
 
         screen_height = lb_lines(output);
-        // +1 to account for the very last line showing @@@'s instead of actual card faces.
-        if (renderer->card_height + renderer->gap_height + renderer->card_peeking + 1 > screen_height) {
+        // +2 to account for the first line showing ^^^s and the very last line showing vvv's
+        // instead of the actual card faces.
+        if (renderer->card_height + renderer->gap_height + renderer->card_peeking + 2 > screen_height) {
             lb_puts(output, S("ETINY\n"));
             return;
         }
@@ -833,8 +860,6 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
         lb_putc(output, '\n');
     }
 
-    screen_height -= (renderer->card_height + renderer->gap_height);
-
     unsigned short lines_needed = screen_lines_needed_for_piles(renderer, &game->piles);
 
     if (renderer->personality == ED_MODE) {
@@ -842,23 +867,38 @@ void render_game_state(Renderer *renderer, const Klondike *game) {
             render_pile_line(renderer, &game->piles, screen_line, 0);
             lb_putc(output, '\n');
         }
-    } else if (renderer->personality == VI_MODE) {
-        for (unsigned short screen_line = 0; screen_line < lines_needed && screen_line < screen_height - 1; screen_line++) {
-            render_pile_line(renderer, &game->piles, screen_line, 0);
-            lb_putc(output, '\n');
-        }
-
-        // If in vi mode, do not scroll past the last line on the screen
-        if (lines_needed >= screen_height) {
-            render_pile_line(renderer, &game->piles, screen_height - 1, '@');
-        }
-
-        lb_puts(output, S("\x1B[J"));
-        if (lines_needed >= screen_height) {
-            lb_putc(output, '\r');
-        }
-        lb_flush(output);
+        return;
     }
+
+    screen_height -= (renderer->card_height + renderer->gap_height);
+
+    unsigned short screen_line = 0;
+    unsigned short window_line = extra->card_window * renderer->card_peeking;
+
+    if (window_line != 0) {
+        render_pile_line(renderer, &game->piles, 0, '^');
+        lb_putc(output, '\n');
+        window_line++;
+        screen_line++;
+    }
+
+    for (; window_line < lines_needed && screen_line < screen_height - 1; screen_line++, window_line++) {
+        render_pile_line(renderer, &game->piles, window_line, 0);
+        lb_putc(output, '\n');
+    }
+
+    if (window_line < lines_needed) {
+        // We're here because we exited the loop on the "screen_line == screen_height - 1" condition,
+        // so don't scroll past the last line on the screen i.e. don't do lb_putc('\n')
+        if (window_line == lines_needed - 1) {
+            render_pile_line(renderer, &game->piles, window_line, 0);
+        } else {
+            render_pile_line(renderer, &game->piles, window_line, 'v');
+        }
+    }
+
+    lb_puts(output, S("\x1B[J\r"));
+    lb_flush(output);
 }
 
 typedef struct MoveCmd {
@@ -1162,26 +1202,38 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
     } while(true);
 }
 
-char *do_visual_selection(LineBuffer *input, LineBuffer *output) {
+char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     while (true) {
         switch (lb_getc(input)) {
         case -1:
             return NULL;
+        case 'Y' - '@':
+            // Scroll up
+            if (increment_card_window(extra, game, -1) == RENDER_NEEDED) {
+                render_game_state(renderer, game, extra);
+            }
+            continue;
+        case 'E' - '@':
+            // Scroll down
+            if (increment_card_window(extra, game, 1) == RENDER_NEEDED) {
+                render_game_state(renderer, game, extra);
+            }
+            continue;
         case ':':
-            drop_into_cooked_mode(output);
-            char *raw = read_command_line(input, output);
-            drop_out_of_cooked_mode(output);
+            drop_into_cooked_mode(renderer->lb);
+            char *raw = read_command_line(input, renderer->lb);
+            drop_out_of_cooked_mode(renderer->lb);
             return raw;
         }
     }
 }
 
-char *get_raw_cmd(LineBuffer *input, LineBuffer *output, Personality personality) {
-    switch (personality) {
+char *get_raw_cmd(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
+    switch (renderer->personality) {
     case ED_MODE:
-        return read_command_line(input, output);
+        return read_command_line(input, renderer->lb);
     case VI_MODE:
-        return do_visual_selection(input, output);
+        return do_visual_selection(input, renderer, game, extra);
     }
 
     return NULL;
@@ -1218,16 +1270,17 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     LineBuffer *output = renderer->lb;
 
     start_game(game, shuffled_deck);
+    AdditionalVisuals extra = { 0 };
 
     while (true) {
-        render_game_state(renderer, game);
+        render_game_state(renderer, game, &extra);
 
         if (is_game_won(game)) {
             return GAME_WON;
         }
 
         for (bool command_succeeded = false; !command_succeeded; ) {
-            const char *raw = get_raw_cmd(input, output, renderer->personality);
+            const char *raw = get_raw_cmd(input, renderer, game, &extra);
 
             if (raw == NULL) {
                 return GAME_QUIT;
