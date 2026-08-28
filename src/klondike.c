@@ -826,6 +826,10 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
     return RENDER_NOT_NEEDED;
 }
 
+void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game) {
+    increment_card_window(extra, game, 0);
+}
+
 void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     LineBuffer *output = renderer->lb;
 
@@ -911,7 +915,7 @@ typedef struct UpCmd {
 } UpCmd;
 
 typedef enum CmdKind : byte {
-    CMD_QUIT, CMD_MOVE, CMD_UP, CMD_DEAL, CMD_RESTART,
+    CMD_QUIT, CMD_REPAINT, CMD_MOVE, CMD_UP, CMD_DEAL, CMD_RESTART,
 } CmdKind;
 
 typedef struct Cmd {
@@ -1092,6 +1096,12 @@ const char *parse_quit_cmd(const char *raw) {
     return raw;
 }
 
+// REPAINT_CMD  ::= "REPAINT"
+const char *parse_repaint_cmd(const char *raw) {
+    raw = skip_str(raw, S("REPAINT"));
+    return raw;
+}
+
 // RESTART_CMD  ::=  "R" "ESTART"?
 const char *parse_restart_cmd(const char *raw) {
     if (raw[0] != 'R') { return false; }
@@ -1106,7 +1116,7 @@ bool parse_ws_eol(const char *raw) {
     return raw[0] == 0;
 }
 
-// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD | RESTART_CMD) WS?
+// CMD  ::=  WS? (MOVE_CMD | UP_CMD | DEAL_CMD | QUIT_CMD | REPAINT_CMD | RESTART_CMD) WS?
 bool parse_cmd(const char *raw, Cmd *cmd) {
     const char *orig_raw = maybe_skip_ws(raw);
 
@@ -1119,6 +1129,7 @@ bool parse_cmd(const char *raw, Cmd *cmd) {
 
     CHOICE(parse_deal_cmd, CMD_DEAL);
     CHOICE(parse_quit_cmd, CMD_QUIT);
+    CHOICE(parse_repaint_cmd, CMD_REPAINT);
     CHOICE(parse_restart_cmd, CMD_RESTART);
     CHOICE(parse_move_cmd, CMD_MOVE, &cmd->move);
     CHOICE(parse_up_cmd, CMD_UP, &cmd->up);
@@ -1172,9 +1183,9 @@ int get_short_line(LineBuffer *input, char *buffer, int buffer_size) {
     return 0;
 }
 
-char *read_command_line(LineBuffer *input, LineBuffer *output) {
-    static char COMMAND_LINE_BUFFER[64];
+static char COMMAND_LINE_BUFFER[64];
 
+char *read_command_line(LineBuffer *input, LineBuffer *output) {
     do {
         if (lb_isatty(input) && lb_isatty(output)) {
             lb_puts(output, S("> "));
@@ -1219,6 +1230,8 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
                 render_game_state(renderer, game, extra);
             }
             continue;
+        case 'L' - '@':
+            return "REPAINT";
         case ':':
             drop_into_cooked_mode(renderer->lb);
             char *raw = read_command_line(input, renderer->lb);
@@ -1228,7 +1241,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
     }
 }
 
-char *get_raw_cmd(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
+const char *get_raw_cmd(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     switch (renderer->personality) {
     case ED_MODE:
         return read_command_line(input, renderer->lb);
@@ -1273,6 +1286,7 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     AdditionalVisuals extra = { 0 };
 
     while (true) {
+        normalize_additional_visuals(&extra, game);
         render_game_state(renderer, game, &extra);
 
         if (is_game_won(game)) {
@@ -1295,6 +1309,9 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
             switch (cmd.kind) {
             case CMD_QUIT:
                 return GAME_QUIT;
+            case CMD_REPAINT:
+                command_succeeded = true;
+                break;
             case CMD_DEAL:
                 command_succeeded = try_deal_card(game);
                 break;
@@ -1450,6 +1467,9 @@ int main(int argc, char **argv) {
             lb_putc(&stdout, '\a');
         }
         lb_puts(&stdout, S("You won!\n"));
+        if (config.personality == VI_MODE) {
+            lb_getc(&stdin);
+        }
     }
 
     stop_renderer(&renderer);
