@@ -29,7 +29,7 @@ bool enter_visual_mode(LineBuffer *lb, TtyCookie *cookie) {
 
     struct termios new_tty_mode = *old_tty_mode;
     new_tty_mode.c_iflag |= ICRNL;
-    new_tty_mode.c_lflag &= ~(ECHO | ICANON);
+    new_tty_mode.c_lflag &= ~(ECHO | ICANON | ISIG);
     new_tty_mode.c_oflag |= OPOST | ONLCR;
     new_tty_mode.c_cc[VMIN] = 1;
     new_tty_mode.c_cc[VTIME] = 0;
@@ -61,7 +61,7 @@ bool drop_into_cooked_mode(LineBuffer *lb) {
     struct termios tty_mode;
     if (tcgetattr(fd, &tty_mode) != 0) { return false; }
 
-    tty_mode.c_lflag |= ECHO | ICANON;
+    tty_mode.c_lflag |= ECHO | ICANON | ISIG;
     if (tcsetattr(fd, TCSANOW, &tty_mode) != 0) { return false; }
 
     lb_puts(lb, S("\x1B[?25h"));
@@ -77,7 +77,7 @@ bool drop_out_of_cooked_mode(LineBuffer *lb) {
     struct termios tty_mode;
     if (tcgetattr(fd, &tty_mode) != 0) { return false; }
 
-    tty_mode.c_lflag &= ~(ECHO | ICANON);
+    tty_mode.c_lflag &= ~(ECHO | ICANON | ISIG);
     if (tcsetattr(fd, TCSANOW, &tty_mode) != 0) { return false; }
 
     lb_puts(lb, S("\x1B[?25l"));

@@ -1217,6 +1217,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
     while (true) {
         switch (lb_getc(input)) {
         case -1:
+        case 'C' - '@':
             return NULL;
         case 'Y' - '@':
             // Scroll up
