@@ -1601,7 +1601,10 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
             drop_into_cooked_mode(renderer->lb);
             char *raw = read_command_line(input, renderer->lb);
             drop_out_of_cooked_mode(renderer->lb);
-            return raw;
+            if (raw && raw[0] != 0) {
+                return raw;
+            }
+            continue;
         }
     }
 }
