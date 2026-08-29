@@ -108,6 +108,24 @@ const char * const SUIT_SYMBOLS[] = {
     [DIAMONDS]  = "\xE2\x99\xA6",
 };
 
+char *print_sigil_s(char *cursor, Card card) {
+    Rank rank = get_rank(card);
+    const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
+    static const char *RANK_SYMBOLS = "_A23456789*JQK";
+
+    if (rank == 10) {
+        *cursor++ = '1';
+        *cursor++ = '0';
+    } else {
+        *cursor++ = RANK_SYMBOLS[rank];
+    }
+
+    strcpy(cursor, suit_symbol);
+    cursor += strlen(suit_symbol);
+
+    return cursor;
+}
+
 void print_sigil(LineBuffer *lb, Card card, int padding) {
     Rank rank = get_rank(card);
     const char *suit_symbol = SUIT_SYMBOLS[get_suit(card)];
@@ -863,7 +881,10 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
 void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game) {
     increment_card_window(extra, game, 0);
 
+    extra->fixed = extra->moving = (CardSelection){ 0 };
+
     if (is_empty_depot(&game->stock) && is_empty_depot(&game->waste)) {
+        extra->moving.place = 0;
         FOREACH (const Depot *, pile, game->piles) {
             if (!is_empty_depot(pile)) {
                 extra->moving.place = PILE1 + (pile - game->piles);
@@ -1266,53 +1287,156 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
 }
 
 char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
+    enum { MOVING, FIXED } state = MOVING;
+
+    // TODO: This call is only needed when it's possible for this function to return a command that won't succeed.
+    normalize_additional_visuals(extra, game);
+
     while (true) {
         switch (lb_getc(input)) {
         case -1:
         case 'C' - '@':
             return NULL;
+
+        // ^Y: scroll up
         case 'Y' - '@':
-            // Scroll up
             if (increment_card_window(extra, game, -1) == RENDER_NEEDED) {
                 render_game_state(renderer, game, extra);
             }
             continue;
+
+        // ^E: scroll down
         case 'E' - '@':
-            // Scroll down
             if (increment_card_window(extra, game, 1) == RENDER_NEEDED) {
                 render_game_state(renderer, game, extra);
             }
             continue;
+
+        // ^L: redraw
         case 'L' - '@':
             return "REPAINT";
+
+        // TODO: Add logic to only move to legal places. Right now, it's easier and faster to just
+        // type the commands instead of navigating the tableau.
+
+        // h: go left
         case 'h':
             if (extra->moving.place == HOME1) {
                 extra->moving.place = WASTE;
             } else {
                 extra->moving.place--;
             }
+            extra->moving.index = 0;
             render_game_state(renderer, game, extra);
             continue;
+
+        // j: go down
         case 'j':
-            if (extra->moving.index < 51) {
-                extra->moving.index++;
-                render_game_state(renderer, game, extra);
+            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
+                const Depot *depot = place_to_depot(game, extra->moving.place);
+                if (extra->moving.index < depot->len - 1) {
+                    extra->moving.index++;
+                    render_game_state(renderer, game, extra);
+                }
             }
-            break;
+            continue;
+
+        // k: go up
         case 'k':
-            if (extra->moving.index > 0) {
+            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7 && extra->moving.index > 0) {
                 extra->moving.index--;
                 render_game_state(renderer, game, extra);
             }
-            break;
+            continue;
+
+        // l: go right
         case 'l':
             if (extra->moving.place == WASTE) {
                 extra->moving.place = HOME1;
             } else {
                 extra->moving.place++;
             }
+            extra->moving.index = 0;
             render_game_state(renderer, game, extra);
             continue;
+
+        // G: go to the bottom of the pile, to its top card. Wait, what?
+        case 'G':
+            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
+                const Depot *depot = place_to_depot(game, extra->moving.place);
+                if (depot->len > 0 && extra->moving.index != depot->len - 1) {
+                    extra->moving.index = depot->len - 1;
+                    render_game_state(renderer, game, extra);
+                }
+            }
+            continue;
+
+        // SPACE, ENTER: start or confirm card selection
+        case '\x20': case '\n':
+            switch(state) {
+            case MOVING:
+                if (extra->moving.place == STOCK) {
+                    return "DEAL";
+                } else {
+                    extra->fixed = extra->moving;
+                    extra->moving.place = STOCK;
+                    extra->moving.index = 0;
+                    state = FIXED;
+                    render_game_state(renderer, game, extra);
+                }
+                break;
+            case FIXED:
+                Place from = extra->fixed.place, to = extra->moving.place;
+                const Depot *from_depot = place_to_depot(game, from);
+                const Depot *to_depot = place_to_depot(game, to);
+
+                // TODO: Make these checks unnecessary by construction; h/j/k/l should be unable to move to
+                // an illegal place.
+                if (from >= HOME1 && from <= HOME4 && from_depot->len == 0) { break; }
+                if (from >= PILE1 && from <= PILE7 && extra->fixed.index >= from_depot->len) { break; }
+                if (to == STOCK || to == WASTE) { break; }
+                if (to >= PILE1 && to <= PILE7 && to_depot->len != 0 && extra->moving.index >= to_depot->len) { break; }
+
+                char *cursor = &COMMAND_LINE_BUFFER[0];
+
+                Card card = (from == WASTE || (from >= HOME1 && from <= HOME4))
+                    ? top_card(from_depot)
+                    : from_depot->cards[extra->fixed.index];
+                if (!is_face_up(card)) { break; }
+                cursor = print_sigil_s(cursor, card);
+                *cursor++ = '\x20';
+
+                if (to >= HOME1 && to <= HOME4 && to_depot->len == 0) {
+                    strcpy(cursor, "HOME");
+                    cursor += LENOF("HOME");
+                    *cursor++ = '1' + to - HOME1;
+                } else if (to >= PILE1 && to <= PILE7 && to_depot->len == 0) {
+                    strcpy(cursor, "EMPTY");
+                    cursor += LENOF("EMPTY");
+                    *cursor++ = '1' + to - PILE1;
+                } else {
+                    card = (to >= HOME1 && to <= HOME4)
+                        ? top_card(to_depot)
+                        : to_depot->cards[extra->moving.index];
+                    if (!is_face_up(card)) { break; }
+                    cursor = print_sigil_s(cursor, card);
+                }
+                *cursor = 0;
+                return COMMAND_LINE_BUFFER;
+            }
+            continue;
+
+        // x: cancel selection
+        case 'x':
+            if (state == FIXED) {
+                extra->moving = extra->fixed;
+                extra->fixed.place = 0;
+                state = MOVING;
+                render_game_state(renderer, game, extra);
+            }
+            continue;
+
+        // :: enter command-line mode
         case ':':
             drop_into_cooked_mode(renderer->lb);
             char *raw = read_command_line(input, renderer->lb);
