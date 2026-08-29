@@ -38,7 +38,7 @@ Card hide_card(Card card) { return is_face_up(card) ? (Card){.d = -card.d} : car
 Card show_card(Card card) { return is_face_up(card) ? card : (Card){.d = -card.d}; }
 
 bool is_valid_deck(const Card deck[static 52]) {
-    bool seen[16 * 4 + 1] = { 0 };
+    bool seen[16 * 4 + 1] = { };
     seen[0] = true;
     for (byte i = 0; i < 4; i++) {
         seen[i * 16 + 14] = seen[i * 16 + 15] = seen[i * 16 + 16] = true;
@@ -911,7 +911,7 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
 
 void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game) {
     increment_card_window(extra, game, 0);
-    extra->fixed = extra->moving = (CardSelection){ 0 };
+    extra->fixed = extra->moving = (CardSelection){ };
 
     // This piece of logic sort of duplicates the default selection logic in do_visual_selection();
     // it's needed here because do_visual_selection() doesn't call render_game_state() initially,
@@ -1197,7 +1197,7 @@ const char* parse_deal_cmd(const char *raw) {
 
 // QUIT_CMD  ::= "Q" "UIT"?
 const char *parse_quit_cmd(const char *raw) {
-    if (raw[0] != 'Q') { return false; }
+    if (raw[0] != 'Q') { return NULL; }
     raw++;
 
     raw = maybe_skip_str(raw, S("UIT"));
@@ -1212,7 +1212,7 @@ const char *parse_repaint_cmd(const char *raw) {
 
 // RESTART_CMD  ::=  "R" "ESTART"?
 const char *parse_restart_cmd(const char *raw) {
-    if (raw[0] != 'R') { return false; }
+    if (raw[0] != 'R') { return NULL; }
     raw++;
 
     raw = maybe_skip_str(raw, S("ESTART"));
@@ -1390,7 +1390,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
             // No legal places? That can only happen if the card in the fixed selection has no legal moves, so
             // cancel the fixed selection.
             extra->moving = extra->fixed;
-            extra->fixed = (CardSelection){ 0 };
+            extra->fixed = (CardSelection){ };
             state = MOVING;
             render_game_state(renderer, game, extra);
             continue;
@@ -1540,7 +1540,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
                     return "DEAL";
                 } else {
                     extra->fixed = extra->moving;
-                    extra->moving = (CardSelection) { 0 };
+                    extra->moving = (CardSelection) { };
                     state = FIXED;
                     render_game_state(renderer, game, extra);
                 }
@@ -1589,7 +1589,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
                 break;
             case FIXED:
                 extra->moving = extra->fixed;
-                extra->fixed = (CardSelection){ 0 };
+                extra->fixed = (CardSelection){ };
                 state = MOVING;
                 render_game_state(renderer, game, extra);
                 break;
@@ -1651,7 +1651,7 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     LineBuffer *output = renderer->lb;
 
     start_game(game, shuffled_deck);
-    AdditionalVisuals extra = { 0 };
+    AdditionalVisuals extra = { };
 
     while (true) {
         normalize_additional_visuals(&extra, game);
@@ -1812,7 +1812,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    Renderer renderer = { 0 };
+    Renderer renderer = { };
     renderer.lb = &stdout;
     renderer.use_color = config.use_color;
     renderer.personality = config.personality;

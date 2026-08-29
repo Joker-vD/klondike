@@ -11,7 +11,7 @@ HEADER_FILES := $(wildcard $(SRC_DIR)/*.h) $(CONFIG_FILE)
 
 OBJ_FILES := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(SOURCE_FILES))
 
-CFLAGS := -Wall -Wextra -Werror -Wno-unused-parameter -O3
+CFLAGS := -Wall -Wextra -Werror -Wno-unused-parameter -O3 --std=c2x -D_DEFAULT_SOURCE
 
 
 build: $(BIN_DIR)/$(TARGET)
@@ -25,7 +25,7 @@ run: build
 test: build
 	./test.sh
 
-$(CONFIG_FILE): configure
+$(CONFIG_FILE): configure | $(OBJ_DIR)
 	./configure
 
 $(BIN_DIR):
