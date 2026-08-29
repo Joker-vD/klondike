@@ -427,7 +427,7 @@ void init_large_card_renderer(Renderer *renderer) {
 
 typedef struct Depot {
     Place place;
-    byte len;
+    sbyte len;
     Card cards[52];
 } Depot;
 
@@ -520,7 +520,7 @@ void move_run(Depot *from, Card start_card, Depot *to) {
     sbyte start_index = card_index(start_card, from);
     if (start_index < 0) { return; }
 
-    for (byte i = start_index; i < from->len; i++) {
+    for (sbyte i = start_index; i < from->len; i++) {
         add_card(from->cards[i], to);
         from->cards[i] = NO_CARD;
     }
@@ -544,7 +544,7 @@ bool is_game_won(const Klondike *game) {
     return true;
 }
 
-Depot *place_to_depot(Klondike *game, Place place) {
+const Depot *place_to_const_depot(const Klondike *game, Place place) {
     if (place >= HOME1 && place <= HOME4) {
         return &game->homes[place - HOME1];
     }
@@ -557,6 +557,15 @@ Depot *place_to_depot(Klondike *game, Place place) {
 
     return NULL;
 }
+
+Depot *place_to_depot(Klondike *game, Place place) {
+    return (Depot*)place_to_const_depot(game, place);
+}
+
+#define place_to_depot(game, place) _Generic((game), \
+    const Klondike* : place_to_const_depot, \
+    Klondike*       : place_to_depot        \
+) ((game), (place))
 
 Depot *find_depot_with_card(Klondike *game, Card card) {
     if (!is_valid_card(card)) { return NULL; }
@@ -739,6 +748,31 @@ bool try_up_card(Klondike *game, Card card) {
     return true;
 }
 
+typedef struct CardSelection {
+    Place place;
+    sbyte index;
+} CardSelection;
+
+bool equal_selections(CardSelection lhs, CardSelection rhs) {
+    return lhs.place == rhs.place && lhs.index == rhs.index;
+}
+
+typedef struct AdditionalVisuals {
+    sbyte card_window;     // index of the first visible card on the screen
+    CardSelection moving, fixed;
+} AdditionalVisuals;
+
+Style style_for_place(AdditionalVisuals *extra, Place place) {
+    return extra->moving.place == place ? STYLE_MOVING :
+        extra->fixed.place == place ? STYLE_FIXED : STYLE_NORMAL;
+}
+
+Style style_for_card(AdditionalVisuals *extra, Place place, byte index) {
+    CardSelection selection = { .place = place, .index = index };
+    return equal_selections(extra->moving, selection) ? STYLE_MOVING :
+        equal_selections(extra->fixed, selection) ? STYLE_FIXED : STYLE_NORMAL;
+}
+
 unsigned short screen_lines_needed_for_pile(const Renderer *renderer, const Depot *pile) {
     if (pile->len == 0) {
         // An empty depot needs to be rendered.
@@ -758,7 +792,9 @@ unsigned short screen_lines_needed_for_piles(const Renderer *renderer, const Dep
 }
 
 // If overlong != NUL, print it in places where non-spaces would be printed
-void render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned short screen_line, char overlong) {
+void render_pile_line(Renderer *renderer, const Depot (*piles)[7], AdditionalVisuals *extra,
+    unsigned short screen_line, char overlong
+) {
     LineBuffer *output = renderer->lb;
 
     // Several overlapping cards can occupy the same screen line, but only the top-most one
@@ -780,12 +816,14 @@ void render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
         if (card_index < min_card_index) { card_index = min_card_index; }
         sbyte scanline = screen_line - card_index * renderer->card_peeking;
 
+        Style style = style_for_card(extra, PILE1 + (pile - *piles), card_index);
+
         if (card_index >= pile->len) {
             if (card_index == 0) {
                 if (overlong) {
                     lb_repc(output, overlong, renderer->card_width);
                 } else {
-                    renderer->render_card(renderer, NO_CARD, STYLE_NORMAL, scanline);
+                    renderer->render_card(renderer, NO_CARD, style, scanline);
                 }
             } else {
                 lb_repc(output, '\x20', renderer->card_width);
@@ -794,15 +832,11 @@ void render_pile_line(Renderer *renderer, const Depot (*piles)[7], unsigned shor
             if (overlong) {
                 lb_repc(output, overlong, renderer->card_width);
             } else {
-                renderer->render_card(renderer, pile->cards[card_index], STYLE_NORMAL, scanline);
+                renderer->render_card(renderer, pile->cards[card_index], style, scanline);
             }
         }
     }
 }
-
-typedef struct AdditionalVisuals {
-    sbyte card_window;     // index of the first visible card on the screen
-} AdditionalVisuals;
 
 typedef enum VisualDamage : bool {
     RENDER_NOT_NEEDED, RENDER_NEEDED,
@@ -811,7 +845,7 @@ typedef enum VisualDamage : bool {
 VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *game, sbyte amount) {
     sbyte new_window = extra->card_window + amount;
 
-    byte longest_pile_len = 0;
+    sbyte longest_pile_len = 0;
     FOREACH (const Depot *, pile, game->piles) {
         if (longest_pile_len < pile->len) { longest_pile_len = pile->len; }
     }
@@ -828,6 +862,17 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
 
 void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game) {
     increment_card_window(extra, game, 0);
+
+    if (is_empty_depot(&game->stock) && is_empty_depot(&game->waste)) {
+        FOREACH (const Depot *, pile, game->piles) {
+            if (!is_empty_depot(pile)) {
+                extra->moving.place = PILE1 + (pile - game->piles);
+                break;
+            }
+        }
+    } else {
+        extra->moving.place = STOCK;
+    }
 }
 
 void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
@@ -847,14 +892,21 @@ void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisua
         }
     }
 
+    Style stock_style = style_for_place(extra, STOCK);
+    Style waste_style = style_for_place(extra, WASTE);
+    const Style home_styles[4] = {
+        style_for_place(extra, HOME1), style_for_place(extra, HOME2),
+        style_for_place(extra, HOME3), style_for_place(extra, HOME4),
+    };
+
     for (sbyte scanline = 0; scanline < renderer->card_height; scanline++) {
-        renderer->render_card(renderer, top_card(&game->stock), STYLE_NORMAL, scanline);
+        renderer->render_card(renderer, top_card(&game->stock), stock_style, scanline);
         lb_putc(output, '\x20');
-        renderer->render_card(renderer, top_card(&game->waste), STYLE_NORMAL, scanline);
+        renderer->render_card(renderer, top_card(&game->waste), waste_style, scanline);
         lb_repc(output, '\x20', renderer->card_width + 2);
         FOREACH (const Depot *, home, game->homes) {
             if (home != game->homes) { lb_putc(output, '\x20'); }
-            renderer->render_card(renderer, top_card(home), STYLE_NORMAL, scanline);
+            renderer->render_card(renderer, top_card(home), home_styles[home - game->homes], scanline);
         }
         lb_putc(output, '\n');
     }
@@ -868,7 +920,7 @@ void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisua
 
     if (renderer->personality == ED_MODE) {
         for (unsigned short screen_line = 0; screen_line < lines_needed; screen_line++) {
-            render_pile_line(renderer, &game->piles, screen_line, 0);
+            render_pile_line(renderer, &game->piles, extra, screen_line, 0);
             lb_putc(output, '\n');
         }
         return;
@@ -880,14 +932,14 @@ void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisua
     unsigned short window_line = extra->card_window * renderer->card_peeking;
 
     if (window_line != 0) {
-        render_pile_line(renderer, &game->piles, 0, '^');
+        render_pile_line(renderer, &game->piles, extra, 0, '^');
         lb_putc(output, '\n');
         window_line++;
         screen_line++;
     }
 
     for (; window_line < lines_needed && screen_line < screen_height - 1; screen_line++, window_line++) {
-        render_pile_line(renderer, &game->piles, window_line, 0);
+        render_pile_line(renderer, &game->piles, extra, window_line, 0);
         lb_putc(output, '\n');
     }
 
@@ -895,9 +947,9 @@ void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisua
         // We're here because we exited the loop on the "screen_line == screen_height - 1" condition,
         // so don't scroll past the last line on the screen i.e. don't do lb_putc('\n')
         if (window_line == lines_needed - 1) {
-            render_pile_line(renderer, &game->piles, window_line, 0);
+            render_pile_line(renderer, &game->piles, extra, window_line, 0);
         } else {
-            render_pile_line(renderer, &game->piles, window_line, 'v');
+            render_pile_line(renderer, &game->piles, extra, window_line, 'v');
         }
     }
 
@@ -1233,6 +1285,34 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
             continue;
         case 'L' - '@':
             return "REPAINT";
+        case 'h':
+            if (extra->moving.place == HOME1) {
+                extra->moving.place = WASTE;
+            } else {
+                extra->moving.place--;
+            }
+            render_game_state(renderer, game, extra);
+            continue;
+        case 'j':
+            if (extra->moving.index < 51) {
+                extra->moving.index++;
+                render_game_state(renderer, game, extra);
+            }
+            break;
+        case 'k':
+            if (extra->moving.index > 0) {
+                extra->moving.index--;
+                render_game_state(renderer, game, extra);
+            }
+            break;
+        case 'l':
+            if (extra->moving.place == WASTE) {
+                extra->moving.place = HOME1;
+            } else {
+                extra->moving.place++;
+            }
+            render_game_state(renderer, game, extra);
+            continue;
         case ':':
             drop_into_cooked_mode(renderer->lb);
             char *raw = read_command_line(input, renderer->lb);
