@@ -14,7 +14,22 @@ The compiled executable is stored at `bin/klondike`. You can execute it directly
 
 ## Configuration
 
-The game recognizes the [`NO_COLOR` environment variable](https://no-color.org/). Use the `--use-color` option to force the use of ANSI color escape sequences.
+The game recognizes the [`NO_COLOR` environment variable](https://no-color.org/). Use the `--use-color` option to force the use of ANSI color escape sequences. The color escape sequences can be customized by changing the `KLONDIKE_COLORS` environment variable which has the following syntax:
+
+    (("S" | "C" | "H" | "D" | "_")  "="  (anything except "|")*  "|")*
+
+The terminating `|` is optional. The strings between the `=` and `|` are pasted as-is between `\e[` and `m` to form the full escape sequences. Each of the `S`, `C`, `H`, `D`, and `_` headers can only be used once. The `_`-headed string specifies the color of the card face, the `S`-, `C`-, `H`-, and `D`-headed strings specify the colors for spades, clubs, hearts, and diamonds, respectively. Omitting a color specification for a suit/card face from the `KLONDIKE_COLORS` environment variable makes the game use the default color for that suit or the card face.
+
+The default color theme is `S=30|C=34|H=31|D=2;33|_=47` — i.e. black spades, blue clubs, red hearts, diamonds of low-intensity yellow-brownish color that looks like the least awful substitute for orange on the terminal emulators tested, and light gray for the card faces; also known as "Balatro High Contrast". The `NO_COLOR` environment variable is equivalent to using `S=|C=|H=|D=|_=` as the value for `KLONDIKE_COLORS`. Some other interesting color themes are
+
+|Color theme|String|
+|---|---|
+| Balatro High Contrast, dark face | `S=37\|_=40` |
+| Traditional, light face | `C=30\|D=31` |
+| Traditional, dark face | `C=37\|D=31\|S=37\|_=40` |
+| Four-color poker, light face | `D=34\|C=1;32\|` |
+| Four-color poker, dark face | `D=34\|C=1;32\|S=37\|_=40` |
+| Interstate 60 | `S=31\|H=30` |
 
 The `--deck` option takes a string representation of an ordered deck to use instead of a random shuffle (e.g. `--deck AS10DKH...`).
 
@@ -80,11 +95,11 @@ Selection:
 | Key | Description |
 |---|---|
 | `SPACE`, `ENTER` | If no card is currently selected, then select the card under cursor — or, if the cursor is at the stock, deal a card. Otherwise, move the selected card/stack of cards to the card/depot under the cursor |
-| `x` | Cancels the current selection |
+| `x` | Cancel the current selection |
 
 Miscellaneous:
 
 | Key | Description |
 |---|---|
 | `^L` | Cancel the selection and repaint the screen |
-| `:` | Switch to the command mode. In this mode, you can enter a command from ed mode, except that the "deal" command has to be spellt in full: pressing `Enter` with the empty input simply exits the command mode instead of dealing a card |
+| `:` | Switch to the command mode. In this mode, you can enter a command from ed mode, except that the "deal" command has to be spelt in full: pressing `Enter` with the empty input simply exits the command mode instead of dealing a card |

@@ -212,10 +212,12 @@ void render_close_higlight(Renderer *renderer) {
 void render_open_colors(Renderer *renderer, const char *color1, size_t color1_len,
     const char *color2, size_t color2_len
 ) {
-    if (renderer->use_color) {
+    if (renderer->use_color && (color1_len != 0 || color2_len != 0)) {
         lb_puts(renderer->lb, S("\x1B["));
         lb_puts(renderer->lb, color1, color1_len);
-        lb_putc(renderer->lb, ';');
+        if (color1_len != 0 && color2_len != 0) {
+            lb_putc(renderer->lb, ';');
+        }
         lb_puts(renderer->lb, color2, color2_len);
         lb_putc(renderer->lb, 'm');
         renderer->styling_state |= COLORED;
@@ -233,14 +235,14 @@ void render_close_colors(Renderer *renderer) {
     }
 }
 
-const char * const SUIT_COLORS[] = {
+const char *SUIT_COLORS[] = {
     [SPADES]    = "30",
     [CLUBS]     = "34",
     [HEARTS]    = "31",
     [DIAMONDS]  = "2;33",
 };
 
-const char FACE_COLOR[] = "47";
+const char *FACE_COLOR = "47";
 
 const char CARDBACK[]   = "\xE2\x96\x92";
 const char HLINE[]      = "\xE2\x94\x80";
@@ -292,7 +294,7 @@ void render_card_sigil(Renderer *renderer, Card card, JustifyKind justify, Style
     print_left_vignette(renderer, style, S(VLINE));
 
     const char *suit_color = SUIT_COLORS[get_suit(card)];
-    render_open_colors(renderer, suit_color, strlen(suit_color), S(FACE_COLOR));
+    render_open_colors(renderer, suit_color, strlen(suit_color), FACE_COLOR, strlen(FACE_COLOR));
     print_sigil(lb, card, justify * (renderer->card_width - 2));
     render_close_colors(renderer);
 
@@ -305,7 +307,7 @@ void render_card_blank_face(Renderer *renderer, Card card, Style style) {
     print_left_vignette(renderer, style, S(VLINE));
 
     const char *suit_color = SUIT_COLORS[get_suit(card)];
-    render_open_colors(renderer, suit_color, strlen(suit_color), S(FACE_COLOR));
+    render_open_colors(renderer, suit_color, strlen(suit_color), FACE_COLOR, strlen(FACE_COLOR));
     lb_repc(lb, '\x20', renderer->card_width - 2);
     render_close_colors(renderer);
 
@@ -1719,6 +1721,66 @@ typedef struct ConfigContext {
     char **argv;
 } ConfigContext;
 
+char *parse_custom_color(char *raw, char **result_ptr) {
+    if (*result_ptr != 0 || *raw++ != '=') {
+        return NULL;
+    }
+    char *end = raw;
+    while (*end != 0 && *end != '|') { end++; }
+
+    *end = 0;
+    *result_ptr = raw;
+    return end + 1;
+}
+
+void parse_and_init_custom_colors(const char *raw_colors) {
+    static char CUSTOM_COLORS_BUFFER[256];
+
+    size_t len = strlen(raw_colors);
+    if (len > LENOF(CUSTOM_COLORS_BUFFER)) { return; }
+    memcpy(CUSTOM_COLORS_BUFFER, raw_colors, len + 1);
+
+    char *cursor = CUSTOM_COLORS_BUFFER, *end = CUSTOM_COLORS_BUFFER + len;
+    char *ptrs[5] = { };
+
+    while (cursor < end) {
+        switch(*cursor++) {
+        case 'S':
+            cursor = parse_custom_color(cursor, &ptrs[SPADES]);
+            if (cursor == NULL) { return; }
+            break;
+        case 'C':
+            cursor = parse_custom_color(cursor, &ptrs[CLUBS]);
+            if (cursor == NULL) { return; }
+            break;
+        case 'H':
+            cursor = parse_custom_color(cursor, &ptrs[HEARTS]);
+            if (cursor == NULL) { return; }
+            break;
+        case 'D':
+            cursor = parse_custom_color(cursor, &ptrs[DIAMONDS]);
+            if (cursor == NULL) { return; }
+            break;
+        case '_':
+            cursor = parse_custom_color(cursor, &ptrs[4]);
+            if (cursor == NULL) { return; }
+            break;
+        default:
+            return;
+        }
+    }
+
+    FOREACH (const char **, p, SUIT_COLORS) {
+        if (ptrs[p - SUIT_COLORS] != NULL) {
+            *p = ptrs[p - SUIT_COLORS];
+        }
+    }
+
+    if (ptrs[4] != NULL) {
+        FACE_COLOR = ptrs[4];
+    }
+}
+
 bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
     {
         const char *no_color = getenv("NO_COLOR");
@@ -1726,6 +1788,11 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
             config->use_color = false;
         } else {
             config->use_color = lb_isatty(ctx->stdout);
+        }
+
+        const char *custom_colors = getenv("KLONDIKE_COLORS");
+        if (custom_colors != NULL && custom_colors[0] != 0) {
+            parse_and_init_custom_colors(custom_colors);
         }
 
         config->explicit_deck = false;
@@ -1807,7 +1874,7 @@ int main(int argc, char **argv) {
     if (!config.explicit_deck) {
         make_shuffled_deck(deck);
         if (!is_valid_deck(deck)) {
-            lb_puts(&stderr, S("bug in a deck shuffler\n"));
+            lb_puts(&stderr, S("bug in the deck shuffler\n"));
             return 1;
         }
     }
