@@ -1656,7 +1656,9 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     AdditionalVisuals extra = { };
 
     while (true) {
-        normalize_additional_visuals(&extra, game);
+        if (renderer->personality != ED_MODE) {
+            normalize_additional_visuals(&extra, game);
+        }
         render_game_state(renderer, game, &extra);
 
         if (is_game_won(game)) {
