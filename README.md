@@ -65,6 +65,8 @@ The "deal" command deals one card from the stock or, if the stock is empty, flip
 
 The "quit" command quits the game. The "restart" command restarts the game with the same shuffling of the deck.
 
+![An example game in ed mode](/docs/ed-mode.gif)
+
 ## Gameplay (vi mode)
 
 Move the cursor around the tableau to chose a card/stack of cards to move. Confirm the selection, then move cursor to the place you want to move the selected card/stack and confirm your choice. Repeat until all the cards are at their homes.
@@ -103,3 +105,5 @@ Miscellaneous:
 |---|---|
 | `^L` | Cancel the selection and repaint the screen |
 | `:` | Switch to the command mode. In this mode, you can enter a command from ed mode, except that the "deal" command has to be spelt in full: pressing `Enter` with the empty input simply exits the command mode instead of dealing a card |
+
+![An example game in vi mode](/docs/vi-mode.gif)
