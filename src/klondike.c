@@ -99,7 +99,8 @@ typedef enum Place : byte {
 } Place;
 
 #define FIRST_PLACE     HOME1
-#define TOTAL_PLACES    (WASTE - HOME1 + 1)
+#define LAST_PLACE      WASTE
+#define TOTAL_PLACES    (LAST_PLACE - FIRST_PLACE + 1)
 
 bool is_place(CardOrPlace x) { return x.d >= HOME1; }
 Place as_place(CardOrPlace place) { return (Place)place.d; };
@@ -580,7 +581,7 @@ bool is_game_won(const Klondike *game) {
     return true;
 }
 
-const Depot *place_to_const_depot(const Klondike *game, Place place) {
+Depot *place_to_depot(Klondike *game, Place place) {
     if (place >= HOME1 && place <= HOME4) {
         return &game->homes[place - HOME1];
     }
@@ -593,15 +594,6 @@ const Depot *place_to_const_depot(const Klondike *game, Place place) {
 
     return NULL;
 }
-
-Depot *place_to_depot(Klondike *game, Place place) {
-    return (Depot*)place_to_const_depot(game, place);
-}
-
-#define place_to_depot(game, place) _Generic((game), \
-    const Klondike* : place_to_const_depot, \
-    Klondike*       : place_to_depot        \
-) ((game), (place))
 
 Depot *find_depot_with_card(Klondike *game, Card card) {
     if (!is_valid_card(card)) { return NULL; }
@@ -749,6 +741,19 @@ bool try_move_card(Klondike *game, Card from_card, CardOrPlace to) {
     return true;
 }
 
+Depot *find_home_for_card(Klondike *game, Card card) {
+    switch (get_rank(card)) {
+    case ACE:
+        return find_empty_home(game);
+    default:
+        Depot *to_home = find_depot_with_card(game, make_card(get_rank(card) - 1, get_suit(card)));
+        if (to_home == NULL || (to_home->place >= HOME1 && to_home->place <= HOME4)) {
+            return to_home;
+        }
+        return NULL;
+    }
+}
+
 bool try_up_card(Klondike *game, Card card) {
     Depot *from_depot = find_depot_with_card(game, card);
     if (from_depot == NULL || from_depot->place == STOCK ||
@@ -758,18 +763,7 @@ bool try_up_card(Klondike *game, Card card) {
         return false;
     }
 
-    Depot *to_home;
-    switch (get_rank(card)) {
-    case ACE:
-        to_home = find_empty_home(game);
-        break;
-    default:
-        to_home = find_depot_with_card(game, make_card(get_rank(card) - 1, get_suit(card)));
-        if (to_home != NULL && (to_home->place < HOME1 || to_home->place > HOME4)) {
-            to_home = NULL;
-        }
-        break;
-    }
+    Depot *to_home = find_home_for_card(game, card);
 
     if (to_home == NULL) {
         return false;
@@ -809,10 +803,10 @@ Style style_for_card(AdditionalVisuals *extra, Place place, byte index) {
         equal_selections(extra->fixed, selection) ? STYLE_FIXED : STYLE_NORMAL;
 }
 
-Card selected_card(CardSelection selection, const Klondike *game) {
-    if (selection.place < FIRST_PLACE || selection.place >= FIRST_PLACE + TOTAL_PLACES) { return NO_CARD; }
+Card selected_card(CardSelection selection, Klondike *game) {
+    if (selection.place < FIRST_PLACE || selection.place > LAST_PLACE) { return NO_CARD; }
 
-    const Depot *depot = place_to_depot(game, selection.place);
+    Depot *depot = place_to_depot(game, selection.place);
     if (selection.place >= PILE1 && selection.place <= PILE7) {
         if (selection.index >= 0 && selection.index < depot->len) {
             return depot->cards[selection.index];
@@ -1323,7 +1317,7 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
     } while(true);
 }
 
-bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], const Klondike *game, AdditionalVisuals *extra) {
+bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], Klondike *game, AdditionalVisuals *extra) {
     memset(legal_depots, 0, TOTAL_PLACES * sizeof(bool));
     bool result = false;
 
@@ -1380,8 +1374,57 @@ bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], const Klondike *g
     return result;
 }
 
-char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
-    enum { MOVING, FIXED } state = MOVING;
+// stock -> waste -> pile #1 -> ... -> pile #7 -> home #1 -> ... -> home #4 -> stock -> ...
+Place move_right_from_place(Place place) {
+    switch (place) {
+    case WASTE:
+        return PILE1;
+    case PILE7:
+        return HOME1;
+    case HOME4:
+        return STOCK;
+    default:
+        return place + 1;
+    }
+}
+
+// ... <- waste <- home #1 <- ... <- home #4 <- pile #1 <- ... <- pile #7 <- stock <- waste
+Place move_left_from_place(Place place) {
+    switch (place) {
+    case HOME1:
+        return WASTE;
+    default:
+        return place - 1;
+    }
+}
+
+typedef enum VisualSelectionState {
+    MOVING, FIXED,
+} VisualSelectionState;
+
+CardSelection find_nice_card_index_for_moving_selection(CardSelection selection, Klondike *game,
+    VisualSelectionState state
+) {
+    if (selection.place >= PILE1 && selection.place <= PILE7) {
+        const Depot *pile = place_to_depot(game, selection.place);
+        sbyte top_index = top_card_index(pile);
+
+        switch (state) {
+        case MOVING:
+            if (pile->len == 0 || find_home_for_card(game, pile->cards[top_index]) == NULL) {
+                return (CardSelection){ .place = selection.place, .index = first_face_up_card_index(pile) };
+            }
+            // fallthrough
+        case FIXED:
+            return (CardSelection){ .place = selection.place, .index = top_index };
+        }
+    }
+
+    return (CardSelection){ .place = selection.place, .index = 0 };
+}
+
+char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game, AdditionalVisuals *extra) {
+    VisualSelectionState state = MOVING;
 
     // TODO: This call is only needed when it's possible for this function to return a command that won't succeed.
     normalize_additional_visuals(extra, game);
@@ -1400,25 +1443,14 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
 
         // If there is no moving selection, chose a suitable default
         if (extra->moving.place == 0) {
-            for (Place place = FIRST_PLACE; place < FIRST_PLACE + TOTAL_PLACES; place++) {
+            for (Place place = FIRST_PLACE; place <= LAST_PLACE; place++) {
                 if (legal_depots[place - FIRST_PLACE]) {
                     extra->moving.place = place;
                     break;
                 }
             }
 
-            extra->moving.index = 0;
-            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *pile = place_to_depot(game, extra->moving.place);
-                switch (state) {
-                case MOVING:
-                    extra->moving.index = first_face_up_card_index(pile);
-                    break;
-                case FIXED:
-                    extra->moving.index = top_card_index(pile);
-                    break;
-                }
-            }
+            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
             render_game_state(renderer, game, extra);
         }
 
@@ -1445,65 +1477,30 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
         case 'L' - '@':
             return "REPAINT";
 
-        // TODO: Add logic to only move to legal places. Right now, it's easier and faster to just
-        // type the commands instead of navigating the tableau.
-
         // h: go left
         case 'h':
             do {
-                if (extra->moving.place == FIRST_PLACE) {
-                    extra->moving.place = FIRST_PLACE + TOTAL_PLACES - 1;
-                } else {
-                    extra->moving.place--;
-                }
+                extra->moving.place = move_left_from_place(extra->moving.place);
             } while (!legal_depots[extra->moving.place - FIRST_PLACE]);
 
-            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *depot = place_to_depot(game, extra->moving.place);
-                switch (state) {
-                case MOVING:
-                    extra->moving.index = first_face_up_card_index(depot);
-                    break;
-                case FIXED:
-                    extra->moving.index = top_card_index(depot);
-                    break;
-                }
-            } else {
-                extra->moving.index = 0;
-            }
+            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
             render_game_state(renderer, game, extra);
             continue;
 
         // l: go right
         case 'l':
             do {
-                if (extra->moving.place == FIRST_PLACE + TOTAL_PLACES - 1) {
-                    extra->moving.place = FIRST_PLACE;
-                } else {
-                    extra->moving.place++;
-                }
+                extra->moving.place = move_right_from_place(extra->moving.place);
             } while (!legal_depots[extra->moving.place - FIRST_PLACE]);
 
-            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *depot = place_to_depot(game, extra->moving.place);
-                switch (state) {
-                case MOVING:
-                    extra->moving.index = first_face_up_card_index(depot);
-                    break;
-                case FIXED:
-                    extra->moving.index = top_card_index(depot);
-                    break;
-                }
-            } else {
-                extra->moving.index = 0;
-            }
+            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
             render_game_state(renderer, game, extra);
             continue;
 
         // j: go down
         case 'j':
             if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *depot = place_to_depot(game, extra->moving.place);
+                Depot *depot = place_to_depot(game, extra->moving.place);
                 if (extra->moving.index < depot->len - 1) {
                     extra->moving.index++;
                     render_game_state(renderer, game, extra);
@@ -1514,7 +1511,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
         // k: go up
         case 'k':
             if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *depot = place_to_depot(game, extra->moving.place);
+                Depot *depot = place_to_depot(game, extra->moving.place);
                 sbyte min_index = first_face_up_card_index(depot);
                 if (extra->moving.index > min_index) {
                     extra->moving.index--;
@@ -1526,9 +1523,21 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
         // G: go to the bottom of the pile, to its top card. Wait, what?
         case 'G':
             if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
-                const Depot *depot = place_to_depot(game, extra->moving.place);
+                Depot *depot = place_to_depot(game, extra->moving.place);
                 if (depot->len > 0 && extra->moving.index != depot->len - 1) {
                     extra->moving.index = depot->len - 1;
+                    render_game_state(renderer, game, extra);
+                }
+            }
+            continue;
+
+        // g: go to the top of the pile, to its bottom-most face-up card.
+        case 'g':
+            if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
+                Depot *depot = place_to_depot(game, extra->moving.place);
+                sbyte index = first_face_up_card_index(depot);
+                if (depot->len > 0 && extra->moving.index != index) {
+                    extra->moving.index = index;
                     render_game_state(renderer, game, extra);
                 }
             }
@@ -1548,16 +1557,8 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
                 }
                 break;
             case FIXED:
-                Place from = extra->fixed.place, to = extra->moving.place;
-                const Depot *from_depot = place_to_depot(game, from);
+                Place to = extra->moving.place;
                 const Depot *to_depot = place_to_depot(game, to);
-
-                // TODO: Make these checks unnecessary by construction; h/j/k/l should be unable to move to
-                // an illegal place.
-                if (from >= HOME1 && from <= HOME4 && from_depot->len == 0) { break; }
-                if (from >= PILE1 && from <= PILE7 && extra->fixed.index >= from_depot->len) { break; }
-                if (to == STOCK || to == WASTE) { break; }
-                if (to >= PILE1 && to <= PILE7 && to_depot->len != 0 && extra->moving.index >= to_depot->len) { break; }
 
                 char *cursor = &COMMAND_LINE_BUFFER[0];
 
@@ -1611,7 +1612,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, const Klondike 
     }
 }
 
-const char *get_raw_cmd(LineBuffer *input, Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
+const char *get_raw_cmd(LineBuffer *input, Renderer *renderer, Klondike *game, AdditionalVisuals *extra) {
     switch (renderer->personality) {
     case ED_MODE:
         return read_command_line(input, renderer->lb);

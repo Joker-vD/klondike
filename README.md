@@ -82,6 +82,7 @@ Movement:
 | `k` | Move the cursor one card up in the current depot |
 | `l` | Move the cursor one depot to the right |
 | `G` | Move the cursor to the bottom of the current depot |
+| `g` | Move the cursor to the top of the current depot |
 
 Scrolling:
 
