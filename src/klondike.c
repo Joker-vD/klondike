@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <limits.h>
 #include <time.h>
+#include <signal.h>
 
 #include "basics.h"
 #include "lbio.h"
@@ -1276,7 +1277,12 @@ int get_short_line(LineBuffer *input, char *buffer, int buffer_size) {
         return read_count;
     }
 
-    // Skip overly long line
+    // Short reads happen due to EOF/error/signal
+    if (read_count < buffer_size) {
+        return -1;
+    }
+
+    // Skip an overly long line
     do {
         read_count = lb_gets(input, buffer, buffer_size);
         if (read_count < 0) {
@@ -1604,7 +1610,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             drop_into_cooked_mode(renderer->lb);
             char *raw = read_command_line(input, renderer->lb);
             drop_out_of_cooked_mode(renderer->lb);
-            if (raw && raw[0] != 0) {
+            if (raw == NULL || raw[0] != 0) {
                 return raw;
             }
             continue;
@@ -1856,6 +1862,11 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
     return true;
 }
 
+void sighandler(int sig_num) {
+    extern sig_atomic_t lb_termination_pending;
+    lb_termination_pending = 1;
+}
+
 Card deck[52];
 Klondike game;
 LineBuffer stdin, stdout, stderr;
@@ -1897,6 +1908,10 @@ int main(int argc, char **argv) {
     case CARD_SIZE_LARGE:
         init_large_card_renderer(&renderer);
     }
+
+    struct sigaction act = { .sa_handler = sighandler };
+    sigaction(SIGINT, &act, NULL);
+    sigaction(SIGTERM, &act, NULL);
 
     start_renderer(&renderer);
 

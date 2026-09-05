@@ -3,8 +3,11 @@
 
 #include <assert.h>
 #include <string.h>
+#include <signal.h>
 #include <unistd.h>
 #include <errno.h>
+
+sig_atomic_t lb_termination_pending;
 
 typedef struct LineBufferImpl {
     int fd;
@@ -135,7 +138,7 @@ bool lb_fill_rdbuf(LineBuffer *blob) {
     while (true) {
         int count = read(lb->fd, lb->buffer, sizeof(lb->buffer));
 
-        if (count < 0 && errno == EINTR) {
+        if (count < 0 && errno == EINTR && lb_termination_pending == 0) {
             continue;
         }
         if (count <= 0) {
