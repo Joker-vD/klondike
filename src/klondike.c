@@ -928,12 +928,19 @@ void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game
     }
 }
 
+sig_atomic_t need_ttysize_refresh;
+
 void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     LineBuffer *output = renderer->lb;
 
     unsigned short screen_height = USHRT_MAX;
 
     if (renderer->personality == VI_MODE) {
+        while (need_ttysize_refresh != 0) {
+            lb_refresh_ttysize(output);
+            need_ttysize_refresh = 0;
+        }
+
         lb_puts(output, S("\x1B[H"));
 
         screen_height = lb_lines(output);
@@ -1460,7 +1467,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             render_game_state(renderer, game, extra);
         }
 
-        switch (lb_getc(input)) {
+        switch (lb_getc(input, GETC_DETECT_INTR)) {
         case -1:
         case 'C' - '@':
             return NULL;
@@ -1480,6 +1487,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             continue;
 
         // ^L: redraw
+        case -2:
         case 'L' - '@':
             return "REPAINT";
 
@@ -1689,6 +1697,7 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
             case CMD_QUIT:
                 return GAME_QUIT;
             case CMD_REPAINT:
+                need_ttysize_refresh = 1;
                 command_succeeded = true;
                 break;
             case CMD_DEAL:
@@ -1862,9 +1871,13 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
     return true;
 }
 
-void sighandler(int sig_num) {
+void sigint_handler(int sig_num) {
     extern sig_atomic_t lb_termination_pending;
     lb_termination_pending = 1;
+}
+
+void sigwinch_handler(int sig_num) {
+    need_ttysize_refresh = 1;
 }
 
 Card deck[52];
@@ -1909,9 +1922,19 @@ int main(int argc, char **argv) {
         init_large_card_renderer(&renderer);
     }
 
-    struct sigaction act = { .sa_handler = sighandler };
+    struct sigaction act = { };
+
+    act.sa_handler = sigint_handler;
     sigaction(SIGINT, &act, NULL);
     sigaction(SIGTERM, &act, NULL);
+
+    act.sa_handler = sigwinch_handler;
+#ifdef SIGWINCH
+    sigaction(SIGWINCH, &act, NULL);
+#endif
+#ifdef SIGCONT
+    sigaction(SIGCONT, &act, NULL);
+#endif
 
     start_renderer(&renderer);
 
@@ -1921,7 +1944,7 @@ int main(int argc, char **argv) {
         }
         lb_puts(&stdout, S("You won!\n"));
         if (config.personality == VI_MODE) {
-            lb_getc(&stdin);
+            lb_getc(&stdin, 0);
         }
     }
 

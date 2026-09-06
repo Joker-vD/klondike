@@ -15,6 +15,7 @@ int lb_fileno(const LineBuffer *lb);
 bool lb_isatty(const LineBuffer *lb);
 unsigned short lb_lines(const LineBuffer *lb);
 unsigned short lb_cols(const LineBuffer *lb);
+void lb_refresh_ttysize(LineBuffer *lb);
 
 void lb_flush(LineBuffer *lb);
 
@@ -28,7 +29,12 @@ void lb_pad_left(LineBuffer *lb, int field_width, int padding);
 // If padding is negative, prints max(0, abs(padding) - field_width) spaces
 void lb_pad_right(LineBuffer *lb, int field_width, int padding);
 
-int lb_getc(LineBuffer *lb);
+typedef enum GetcFlags : unsigned char {
+    GETC_DETECT_INTR = 1,
+} GetcFlags;
+
+// Returns -1 on EOF/ERROR, returns -2 on EINTR if flags has GETC_DETECT_INTR
+int lb_getc(LineBuffer *lb, GetcFlags flags);
 // Reads bytes from the input and writes them into the buffer, until either buffer_size bytes are written,
 // or LF is written, or EOF/error is encountered. Returns the number of bytes written or, if 0 would be
 // returned because of encountering EOF/error early, returns -1 instead.

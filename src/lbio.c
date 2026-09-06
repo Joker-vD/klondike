@@ -1,3 +1,4 @@
+#include "basics.h"
 #include "lbio.h"
 #include "tty.h"
 
@@ -33,10 +34,8 @@ void lb_init_from_fd(LineBuffer *blob, int fd) {
     RECAST;
     lb->fd = fd;
     lb->isatty = isatty(fd);
-    if (!lb->isatty || !get_tty_size(fd, &lb->tty_size)) {
-        lb->tty_size.lines = lb->tty_size.cols = 0;
-    }
     lb->offset = lb->end = 0;
+    lb_refresh_ttysize(blob);
 }
 
 int lb_fileno(const LineBuffer *blob) {
@@ -57,6 +56,13 @@ unsigned short lb_lines(const LineBuffer *blob) {
 unsigned short lb_cols(const LineBuffer *blob) {
     const RECAST;
     return lb->tty_size.cols;
+}
+
+void lb_refresh_ttysize(LineBuffer *blob) {
+    RECAST;
+    if (!lb->isatty || !get_tty_size(lb->fd, &lb->tty_size)) {
+        lb->tty_size.lines = lb->tty_size.cols = 0;
+    }
 }
 
 void lb_flush(LineBuffer *blob) {
@@ -131,31 +137,53 @@ void lb_pad_right(LineBuffer *blob, int field_width, int padding) {
     }
 }
 
-bool lb_fill_rdbuf(LineBuffer *blob) {
+typedef enum RdbuffResult : byte {
+    RDBUFF_OK, RDBUFF_EOF, RDBUFF_ERROR, RDBUFF_INTR,
+} RdbuffResult;
+
+RdbuffResult lb_fill_rdbuf(LineBuffer *blob, bool detect_eintr) {
     RECAST;
     lb->offset = lb->end = 0;
 
     while (true) {
         int count = read(lb->fd, lb->buffer, sizeof(lb->buffer));
 
-        if (count < 0 && errno == EINTR && lb_termination_pending == 0) {
-            continue;
+        if (count < 0) {
+            if (errno == EINTR) {
+                if (detect_eintr || lb_termination_pending != 0) {
+                    return RDBUFF_INTR;
+                } else {
+                    continue;
+                }
+            } else {
+                return RDBUFF_ERROR;
+            }
         }
-        if (count <= 0) {
-            return false;
+        if (count == 0) {
+            return RDBUFF_EOF;
         }
 
         lb->end = count;
-        return true;
+        return RDBUFF_OK;
     }
 }
 
-int lb_getc(LineBuffer *blob) {
+int lb_getc(LineBuffer *blob, GetcFlags flags) {
     RECAST;
 
     if (lb->offset == lb->end) {
-        if (!lb_fill_rdbuf(blob)) {
+        switch (lb_fill_rdbuf(blob, (flags & GETC_DETECT_INTR) != 0)) {
+        case RDBUFF_EOF:
+        case RDBUFF_ERROR:
             return -1;
+        case RDBUFF_INTR:
+            if ((flags & GETC_DETECT_INTR) != 0) {
+                return -2;
+            } else {
+                return -1;
+            }
+        default:
+            break;
         }
     }
 
@@ -171,7 +199,7 @@ int lb_gets(LineBuffer *blob, char *buffer, int buffer_size) {
 
     do {
         if (lb->offset == lb->end) {
-            if (!lb_fill_rdbuf(blob)) {
+            if (lb_fill_rdbuf(blob, false) != RDBUFF_OK) {
                 if (total_read_count == 0) { total_read_count = -1; }
                 break;
             }
