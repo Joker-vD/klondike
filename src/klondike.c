@@ -791,6 +791,7 @@ bool equal_selections(CardSelection lhs, CardSelection rhs) {
 typedef struct AdditionalVisuals {
     sbyte card_window;     // index of the first visible card on the screen
     CardSelection moving, fixed;
+    bool legal_depots[TOTAL_PLACES];
 } AdditionalVisuals;
 
 Style style_for_place(AdditionalVisuals *extra, Place place) {
@@ -904,28 +905,6 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
         return RENDER_NEEDED;
     }
     return RENDER_NOT_NEEDED;
-}
-
-void normalize_additional_visuals(AdditionalVisuals *extra, const Klondike *game) {
-    increment_card_window(extra, game, 0);
-    extra->fixed = extra->moving = (CardSelection){ };
-
-    // This piece of logic sort of duplicates the default selection logic in do_visual_selection();
-    // it's needed here because do_visual_selection() doesn't call render_game_state() initially,
-    // assuming it was called in the main game loop. So if this logic is removed, then the default
-    // selection won't be rendered until it's explicitly moved by h/j/k/l/etc.
-    //
-    // TODO: figure out how to de-duplicate it properly.
-    if (is_empty_depot(&game->stock) && is_empty_depot(&game->waste)) {
-        FOREACH (const Depot *, pile, game->piles) {
-            if (!is_empty_depot(pile)) {
-                extra->moving.place = PILE1 + (pile - game->piles);
-                break;
-            }
-        }
-    } else {
-        extra->moving.place = STOCK;
-    }
 }
 
 sig_atomic_t need_ttysize_refresh;
@@ -1330,31 +1309,31 @@ char *read_command_line(LineBuffer *input, LineBuffer *output) {
     } while(true);
 }
 
-bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], Klondike *game, AdditionalVisuals *extra) {
-    memset(legal_depots, 0, TOTAL_PLACES * sizeof(bool));
+bool find_legal_depots(Klondike *game, AdditionalVisuals *extra) {
+    memset(extra->legal_depots, 0, TOTAL_PLACES * sizeof(bool));
     bool result = false;
 
     if (extra->fixed.place == 0) {
         // There is no fixed selection, we're just looking for an arbitrary card to grab. First, the stock is
         // available for dealing cards if there are any cards in the stock/waste area.
         if (!is_empty_depot(&game->stock) || !is_empty_depot(&game->waste)) {
-            legal_depots[STOCK - FIRST_PLACE] = true;
+            extra->legal_depots[STOCK - FIRST_PLACE] = true;
             result = true;
         }
         // Next, all non-empty depots are legal to grab a card from them
         if (!is_empty_depot(&game->waste)) {
-            legal_depots[WASTE - FIRST_PLACE] = true;
+            extra->legal_depots[WASTE - FIRST_PLACE] = true;
             result = true;
         }
         FOREACH (const Depot *, home, game->homes) {
             if (!is_empty_depot(home)) {
-                legal_depots[HOME1 - FIRST_PLACE + home - game->homes] = true;
+                extra->legal_depots[HOME1 - FIRST_PLACE + home - game->homes] = true;
                 result = true;
             }
         }
         FOREACH (const Depot *, pile, game->piles) {
             if (!is_empty_depot(pile)) {
-                legal_depots[PILE1 - FIRST_PLACE + pile - game->piles] = true;
+                extra->legal_depots[PILE1 - FIRST_PLACE + pile - game->piles] = true;
                 result = true;
             }
         }
@@ -1368,7 +1347,7 @@ bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], Klondike *game, A
         if (equal_cards(card, top_card(place_to_depot(game, extra->fixed.place)))) {
             FOREACH (const Depot *, home, game->homes) {
                 if (is_legal_move_to_home(card, top_card(home))) {
-                    legal_depots[HOME1 - FIRST_PLACE + home - game->homes] = true;
+                    extra->legal_depots[HOME1 - FIRST_PLACE + home - game->homes] = true;
                     result = true;
                 }
             }
@@ -1378,7 +1357,7 @@ bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], Klondike *game, A
         // to move that run there.
         FOREACH (const Depot *, pile, game->piles) {
             if (is_legal_move_to_pile(card, top_card(pile))) {
-                legal_depots[PILE1 - FIRST_PLACE + pile - game->piles] = true;
+                extra->legal_depots[PILE1 - FIRST_PLACE + pile - game->piles] = true;
                 result = true;
             }
         }
@@ -1386,6 +1365,77 @@ bool find_legal_depots(bool legal_depots[static TOTAL_PLACES], Klondike *game, A
 
     return result;
 }
+
+
+void find_nice_card_index_for_moving_selection(AdditionalVisuals *extra, Klondike *game) {
+    if (extra->moving.place >= PILE1 && extra->moving.place <= PILE7) {
+        const Depot *pile = place_to_depot(game, extra->moving.place);
+        sbyte top_index = top_card_index(pile);
+
+        if (extra->fixed.place == 0 && (pile->len == 0 || find_home_for_card(game, pile->cards[top_index]) == NULL)) {
+            extra->moving.index = first_face_up_card_index(pile);
+        } else {
+            extra->moving.index = top_index;
+        }
+    } else {
+        extra->moving.index = 0;
+    }
+}
+
+bool chose_default_moving_selection(Klondike *game, AdditionalVisuals *extra) {
+    if (!find_legal_depots(game, extra)) {
+        return false;
+    }
+
+    // If there is no moving selection, chose a suitable default
+    if (extra->moving.place == 0) {
+        if (extra->fixed.place == 0) {
+            // If there is no fixed selection, then settle either on stock, or on a
+            // non-empty pile. This can fail only after the game is won, in which case
+            // the absence of a moving selection drawn on a home depot is fine
+            if (extra->legal_depots[STOCK - FIRST_PLACE]) {
+                extra->moving.place = STOCK;
+            } else {
+                for (Place place = PILE1; place <= PILE7; place++) {
+                    if (extra->legal_depots[place - FIRST_PLACE]) {
+                        extra->moving.place = place;
+                        break;
+                    }
+                }
+            }
+
+            find_nice_card_index_for_moving_selection(extra, game);
+            return true;
+        } else {
+            // If there is a fixed selection, proritise the home depots over the piles
+            for (Place place = HOME1; place <= HOME4; place++) {
+                if (extra->legal_depots[place - FIRST_PLACE]) {
+                    extra->moving.place = place;
+                    find_nice_card_index_for_moving_selection(extra, game);
+                    return true;
+                }
+            }
+
+            for (Place place = PILE1; place <= PILE7; place++) {
+                if (extra->legal_depots[place - FIRST_PLACE]) {
+                    extra->moving.place = place;
+                    find_nice_card_index_for_moving_selection(extra, game);
+                    break;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
+void prepare_visual_selection(AdditionalVisuals *extra, Klondike *game) {
+    increment_card_window(extra, game, 0);
+    extra->fixed = extra->moving = (CardSelection){ };
+
+    chose_default_moving_selection(game, extra);
+}
+
 
 // stock -> waste -> pile #1 -> ... -> pile #7 -> home #1 -> ... -> home #4 -> stock -> ...
 Place move_right_from_place(Place place) {
@@ -1411,62 +1461,10 @@ Place move_left_from_place(Place place) {
     }
 }
 
-typedef enum VisualSelectionState {
-    MOVING, FIXED,
-} VisualSelectionState;
-
-CardSelection find_nice_card_index_for_moving_selection(CardSelection selection, Klondike *game,
-    VisualSelectionState state
-) {
-    if (selection.place >= PILE1 && selection.place <= PILE7) {
-        const Depot *pile = place_to_depot(game, selection.place);
-        sbyte top_index = top_card_index(pile);
-
-        switch (state) {
-        case MOVING:
-            if (pile->len == 0 || find_home_for_card(game, pile->cards[top_index]) == NULL) {
-                return (CardSelection){ .place = selection.place, .index = first_face_up_card_index(pile) };
-            }
-            // fallthrough
-        case FIXED:
-            return (CardSelection){ .place = selection.place, .index = top_index };
-        }
-    }
-
-    return (CardSelection){ .place = selection.place, .index = 0 };
-}
-
 char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game, AdditionalVisuals *extra) {
-    VisualSelectionState state = MOVING;
-
-    // TODO: This call is only needed when it's possible for this function to return a command that won't succeed.
-    normalize_additional_visuals(extra, game);
-    bool legal_depots[TOTAL_PLACES];
+    static enum { MOVING, FIXED } state = MOVING;
 
     while (true) {
-        if (!find_legal_depots(legal_depots, game, extra)) {
-            // No legal places? That can only happen if the card in the fixed selection has no legal moves, so
-            // cancel the fixed selection.
-            extra->moving = extra->fixed;
-            extra->fixed = (CardSelection){ };
-            state = MOVING;
-            render_game_state(renderer, game, extra);
-            continue;
-        }
-
-        // If there is no moving selection, chose a suitable default
-        if (extra->moving.place == 0) {
-            for (Place place = FIRST_PLACE; place <= LAST_PLACE; place++) {
-                if (legal_depots[place - FIRST_PLACE]) {
-                    extra->moving.place = place;
-                    break;
-                }
-            }
-
-            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
-            render_game_state(renderer, game, extra);
-        }
-
         switch (lb_getc(input, GETC_DETECT_INTR)) {
         case -1:
         case 'C' - '@':
@@ -1495,9 +1493,9 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
         case 'h':
             do {
                 extra->moving.place = move_left_from_place(extra->moving.place);
-            } while (!legal_depots[extra->moving.place - FIRST_PLACE]);
+            } while (!extra->legal_depots[extra->moving.place - FIRST_PLACE]);
 
-            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
+            find_nice_card_index_for_moving_selection(extra, game);
             render_game_state(renderer, game, extra);
             continue;
 
@@ -1505,9 +1503,9 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
         case 'l':
             do {
                 extra->moving.place = move_right_from_place(extra->moving.place);
-            } while (!legal_depots[extra->moving.place - FIRST_PLACE]);
+            } while (!extra->legal_depots[extra->moving.place - FIRST_PLACE]);
 
-            extra->moving = find_nice_card_index_for_moving_selection(extra->moving, game, state);
+            find_nice_card_index_for_moving_selection(extra, game);
             render_game_state(renderer, game, extra);
             continue;
 
@@ -1564,12 +1562,21 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
                 if (extra->moving.place == STOCK) {
                     return "DEAL";
                 } else {
+                    AdditionalVisuals undo_extra = *extra;
                     extra->fixed = extra->moving;
                     extra->moving = (CardSelection) { };
-                    state = FIXED;
-                    render_game_state(renderer, game, extra);
+                    if (!chose_default_moving_selection(game, extra)) {
+                        // No legal places? That can only happen if the card in the fixed selection has no legal moves, so
+                        // cancel the fixed selection.
+                        *extra = undo_extra;
+                        continue;
+                    } else {
+                        state = FIXED;
+                        render_game_state(renderer, game, extra);
+                    }
                 }
                 break;
+
             case FIXED:
                 Place to = extra->moving.place;
                 const Depot *to_depot = place_to_depot(game, to);
@@ -1595,6 +1602,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
                     cursor = print_sigil_s(cursor, card);
                 }
                 *cursor = 0;
+                state = MOVING;
                 return COMMAND_LINE_BUFFER;
             }
             continue;
@@ -1607,6 +1615,8 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             case FIXED:
                 extra->moving = extra->fixed;
                 extra->fixed = (CardSelection){ };
+                // Cannot return false
+                chose_default_moving_selection(game, extra);
                 state = MOVING;
                 render_game_state(renderer, game, extra);
                 break;
@@ -1619,6 +1629,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             char *raw = read_command_line(input, renderer->lb);
             drop_out_of_cooked_mode(renderer->lb);
             if (raw == NULL || raw[0] != 0) {
+                state = MOVING;
                 return raw;
             }
             continue;
@@ -1671,9 +1682,10 @@ GameResult play_game(LineBuffer *input, Renderer *renderer, Klondike *game, cons
     AdditionalVisuals extra = { };
 
     while (true) {
-        if (renderer->personality != ED_MODE) {
-            normalize_additional_visuals(&extra, game);
+        if (renderer->personality == VI_MODE) {
+            prepare_visual_selection(&extra, game);
         }
+
         render_game_state(renderer, game, &extra);
 
         if (is_game_won(game)) {
