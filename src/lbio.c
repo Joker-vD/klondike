@@ -4,11 +4,10 @@
 
 #include <assert.h>
 #include <string.h>
-#include <signal.h>
 #include <unistd.h>
 #include <errno.h>
 
-sig_atomic_t lb_termination_pending;
+volatile sig_atomic_t lb_termination_pending;
 
 typedef struct LineBufferImpl {
     int fd;

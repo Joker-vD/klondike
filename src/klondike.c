@@ -907,7 +907,7 @@ VisualDamage increment_card_window(AdditionalVisuals *extra, const Klondike *gam
     return RENDER_NOT_NEEDED;
 }
 
-sig_atomic_t need_ttysize_refresh;
+volatile sig_atomic_t need_ttysize_refresh;
 
 void render_game_state(Renderer *renderer, const Klondike *game, AdditionalVisuals *extra) {
     LineBuffer *output = renderer->lb;
@@ -1872,7 +1872,6 @@ bool init_config(ConfigContext *ctx, Config *config, Card deck[static 52]) {
 }
 
 void sigint_handler(int sig_num) {
-    extern sig_atomic_t lb_termination_pending;
     lb_termination_pending = 1;
 }
 

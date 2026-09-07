@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdalign.h>
 #include <stddef.h>
+#include <signal.h>
 
 typedef struct LineBufferStorage {
     alignas(int) unsigned char blob[270];
@@ -39,5 +40,7 @@ int lb_getc(LineBuffer *lb, GetcFlags flags);
 // or LF is written, or EOF/error is encountered. Returns the number of bytes written or, if 0 would be
 // returned because of encountering EOF/error early, returns -1 instead.
 int lb_gets(LineBuffer *lb, char *buffer, int buffer_size);
+
+extern volatile sig_atomic_t lb_termination_pending;
 
 #endif // LBIO_H_
