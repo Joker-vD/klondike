@@ -1462,9 +1462,9 @@ Place move_left_from_place(Place place) {
 }
 
 char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game, AdditionalVisuals *extra) {
-    static enum { MOVING, FIXED } state = MOVING;
-
     while (true) {
+        const bool has_fixed_selection = extra->fixed.place != 0;
+
         switch (lb_getc(input, GETC_DETECT_INTR)) {
         case -1:
         case 'C' - '@':
@@ -1557,8 +1557,7 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
 
         // SPACE, ENTER: start or confirm card selection
         case '\x20': case '\n':
-            switch(state) {
-            case MOVING:
+            if (!has_fixed_selection) {
                 if (extra->moving.place == STOCK) {
                     return "DEAL";
                 } else {
@@ -1566,18 +1565,14 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
                     extra->fixed = extra->moving;
                     extra->moving = (CardSelection) { };
                     if (!chose_default_moving_selection(game, extra)) {
-                        // No legal places? That can only happen if the card in the fixed selection has no legal moves, so
-                        // cancel the fixed selection.
+                        // No legal places? That can only happen if the card in the fixed selection
+                        // has no legal moves, so cancel the fixed selection.
                         *extra = undo_extra;
-                        continue;
                     } else {
-                        state = FIXED;
                         render_game_state(renderer, game, extra);
                     }
                 }
-                break;
-
-            case FIXED:
+            } else {
                 Place to = extra->moving.place;
                 const Depot *to_depot = place_to_depot(game, to);
 
@@ -1602,24 +1597,18 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
                     cursor = print_sigil_s(cursor, card);
                 }
                 *cursor = 0;
-                state = MOVING;
                 return COMMAND_LINE_BUFFER;
             }
             continue;
 
         // x: cancel selection
         case 'x':
-            switch (state) {
-            case MOVING:
-                break;
-            case FIXED:
+            if (has_fixed_selection) {
                 extra->moving = extra->fixed;
                 extra->fixed = (CardSelection){ };
                 // Cannot return false
                 chose_default_moving_selection(game, extra);
-                state = MOVING;
                 render_game_state(renderer, game, extra);
-                break;
             }
             continue;
 
@@ -1629,7 +1618,6 @@ char *do_visual_selection(LineBuffer *input, Renderer *renderer, Klondike *game,
             char *raw = read_command_line(input, renderer->lb);
             drop_out_of_cooked_mode(renderer->lb);
             if (raw == NULL || raw[0] != 0) {
-                state = MOVING;
                 return raw;
             }
             continue;
